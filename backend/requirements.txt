@@ -11,3 +11,4 @@ python-multipart>=0.0.18
 pillow>=10.4.0
 bcrypt
 passlib
+PyJWT
