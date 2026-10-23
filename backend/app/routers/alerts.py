@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import AlertModel
+from app.models import AlertModel, UserModel
 from app.schemas import AlertCreate, AlertUpdate, AlertResponse
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
@@ -15,7 +16,8 @@ def list_alerts(
     site: Optional[str] = Query(None, description="Filter by construction site"),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by status (Active, Acknowledged, Resolved, Dismissed)"),
     alert_type: Optional[str] = Query(None, alias="type", description="Filter by alert type (critical, high, medium, info)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
 ):
     """Retrieve all incident and sensor triage alerts with optional filters."""
     query = db.query(AlertModel)
@@ -31,7 +33,11 @@ def list_alerts(
 
 
 @router.get("/{alert_id}", response_model=AlertResponse, summary="Get alert by ID")
-def get_alert(alert_id: str, db: Session = Depends(get_db)):
+def get_alert(
+    alert_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
     """Retrieve details for a single alert record."""
     alert = db.query(AlertModel).filter(AlertModel.id == alert_id).first()
     if not alert:
@@ -43,7 +49,11 @@ def get_alert(alert_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=AlertResponse, status_code=status.HTTP_201_CREATED, summary="Create a new alert")
-def create_alert(alert_in: AlertCreate, db: Session = Depends(get_db)):
+def create_alert(
+    alert_in: AlertCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
     """Dispatch a new sensor or incident alert into the database triage queue."""
     alert_id = alert_in.id or f"ALT-{random.randint(400, 9999)}"
 
@@ -54,54 +64,62 @@ def create_alert(alert_in: AlertCreate, db: Session = Depends(get_db)):
             detail=f"An alert with ID '{alert_id}' already exists."
         )
 
-    alert_obj = AlertModel(
+    db_alert = AlertModel(
         id=alert_id,
         hazard_id=alert_in.hazard_id,
         title=alert_in.title,
         desc=alert_in.desc,
         site=alert_in.site,
-        time=alert_in.time,
+        time=alert_in.time or "Just now",
         type=alert_in.type.lower(),
         status=alert_in.status
     )
 
-    db.add(alert_obj)
+    db.add(db_alert)
     db.commit()
-    db.refresh(alert_obj)
-    return alert_obj
+    db.refresh(db_alert)
+    return db_alert
 
 
-@router.patch("/{alert_id}", response_model=AlertResponse, summary="Update an alert status")
-def update_alert(alert_id: str, alert_update: AlertUpdate, db: Session = Depends(get_db)):
-    """Acknowledge, resolve, or edit an alert entry."""
-    alert_obj = db.query(AlertModel).filter(AlertModel.id == alert_id).first()
-    if not alert_obj:
+@router.patch("/{alert_id}", response_model=AlertResponse, summary="Update an alert")
+def update_alert(
+    alert_id: str,
+    alert_in: AlertUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Update fields on an existing alert (e.g. acknowledge, resolve, or re-categorize)."""
+    db_alert = db.query(AlertModel).filter(AlertModel.id == alert_id).first()
+    if not db_alert:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Alert with ID '{alert_id}' not found."
         )
 
-    update_data = alert_update.model_dump(exclude_unset=True)
-    for field, val in update_data.items():
-        if field == "type" and val:
-            val = val.lower()
-        setattr(alert_obj, field, val)
+    update_dict = alert_in.model_dump(exclude_unset=True)
+    for field, val in update_dict.items():
+        if hasattr(db_alert, field):
+            setattr(db_alert, field, val)
 
     db.commit()
-    db.refresh(alert_obj)
-    return alert_obj
+    db.refresh(db_alert)
+    return db_alert
 
 
-@router.delete("/{alert_id}", summary="Delete or dismiss an alert")
-def delete_alert(alert_id: str, db: Session = Depends(get_db)):
-    """Permanently delete an alert from the triage queue."""
-    alert_obj = db.query(AlertModel).filter(AlertModel.id == alert_id).first()
-    if not alert_obj:
+@router.delete("/{alert_id}", status_code=status.HTTP_200_OK, summary="Dismiss/delete an alert")
+def delete_alert(
+    alert_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Dismiss and remove an alert from the active triage queue."""
+    db_alert = db.query(AlertModel).filter(AlertModel.id == alert_id).first()
+    if not db_alert:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Alert with ID '{alert_id}' not found."
         )
 
-    db.delete(alert_obj)
+    db.delete(db_alert)
     db.commit()
-    return {"status": "success", "message": f"Alert '{alert_id}' successfully deleted.", "id": alert_id}
+    return {"status": "ok", "message": f"Alert '{alert_id}' was dismissed.", "id": alert_id}

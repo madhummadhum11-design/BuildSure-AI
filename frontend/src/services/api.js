@@ -8,6 +8,45 @@ export const API_BASE_URL = (
   typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL
 ) ? import.meta.env.VITE_API_URL : 'http://127.0.0.1:8000/api'
 
+export const TOKEN_STORAGE_KEY = 'siteguard_auth_token'
+
+/**
+ * Retrieves the stored JWT authentication token from localStorage.
+ */
+export function getAuthToken() {
+  try {
+    return localStorage.getItem(TOKEN_STORAGE_KEY) || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Stores the JWT authentication token into localStorage.
+ */
+export function setAuthToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, token)
+    } else {
+      localStorage.removeItem(TOKEN_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore localStorage write failures in private browsing
+  }
+}
+
+/**
+ * Clears the stored JWT authentication token.
+ */
+export function clearAuthToken() {
+  try {
+    localStorage.removeItem(TOKEN_STORAGE_KEY)
+  } catch {
+    // Ignore
+  }
+}
+
 /**
  * Handles HTTP response validation and parses JSON payload or structured FastAPI error details.
  * Throws explicit descriptive Error on HTTP non-2xx responses or network failures.
@@ -29,6 +68,12 @@ async function handleResponse(res) {
     }
     const err = new Error(`API Error (${res.status}): ${detail}`)
     err.status = res.status
+    if (res.status === 401) {
+      clearAuthToken()
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('siteguard:session-expired', { detail: { message: detail } }))
+      }
+    }
     throw err
   }
 
@@ -41,13 +86,15 @@ async function handleResponse(res) {
 }
 
 /**
- * Wraps native fetch calls with standard headers and robust network failure diagnostics.
+ * Wraps native fetch calls with standard headers, JWT bearer authentication, and robust network failure diagnostics.
  */
 async function apiRequest(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`
+  const token = getAuthToken()
   const headers = {
     'Accept': 'application/json',
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     ...(options.headers || {})
   }
 
@@ -393,12 +440,15 @@ export async function analyzePhoto(file, confidence) {
   }
 
   try {
+    const token = getAuthToken()
+    const headers = {
+      'Accept': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    }
     const res = await fetch(url, {
       method: 'POST',
       body: formData,
-      headers: {
-        'Accept': 'application/json'
-      }
+      headers
     })
     return await handleResponse(res)
   } catch (err) {
@@ -413,4 +463,116 @@ export async function analyzePhoto(file, confidence) {
  */
 export async function getVisionStatus() {
   return await apiRequest('/vision/status', { method: 'GET' })
+}
+
+// ============================================================================
+// Authentication Endpoints
+// ============================================================================
+
+/**
+ * Authenticates user credentials and stores the returned JWT access token.
+ * @param {string} email
+ * @param {string} password
+ * @returns {Promise<{ access_token: string, token_type: string, expires_in?: number, user: Object }>}
+ */
+export async function loginUser(email, password) {
+  if (!email || !password) {
+    throw new Error('Email and password are required.')
+  }
+  const data = await apiRequest('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: email.trim(), password })
+  })
+
+  const token = data?.access_token || data?.accessToken
+  if (token) {
+    setAuthToken(token)
+    data.access_token = token
+    data.accessToken = token
+  }
+
+  if (data?.user) {
+    data.user.full_name = data.user.full_name || data.user.fullName || 'Safety Officer'
+    data.user.fullName = data.user.fullName || data.user.full_name || 'Safety Officer'
+  }
+
+  return data
+}
+
+/**
+ * Registers a new user account, stores the JWT access token, and returns user profile.
+ * @param {Object} userData - { email, password, full_name, role }
+ * @returns {Promise<{ access_token: string, token_type: string, expires_in?: number, user: Object }>}
+ */
+export async function registerUser(userData) {
+  if (!userData || !userData.email || !userData.password) {
+    throw new Error('Email and password are required.')
+  }
+  const payload = {
+    email: userData.email.trim(),
+    password: userData.password,
+    full_name: userData.fullName || userData.full_name || 'Safety Specialist',
+    role: userData.role || 'Safety Officer'
+  }
+  const data = await apiRequest('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+
+  const token = data?.access_token || data?.accessToken
+  if (token) {
+    setAuthToken(token)
+    data.access_token = token
+    data.accessToken = token
+  }
+
+  if (data?.user) {
+    data.user.full_name = data.user.full_name || data.user.fullName || 'Safety Officer'
+    data.user.fullName = data.user.fullName || data.user.full_name || 'Safety Officer'
+  }
+
+  return data
+}
+
+/**
+ * Fetches the authenticated user profile using current JWT token.
+ * @returns {Promise<Object>}
+ */
+export async function fetchCurrentUser() {
+  const token = getAuthToken()
+  if (!token) {
+    return null
+  }
+  try {
+    const raw = await apiRequest('/auth/me', { method: 'GET' })
+    if (!raw) return null
+    return {
+      id: raw.id,
+      email: raw.email,
+      fullName: raw.fullName || raw.full_name || 'Safety Officer',
+      full_name: raw.full_name || raw.fullName || 'Safety Officer',
+      role: raw.role || 'Director of Safety Operations',
+      isActive: raw.isActive ?? raw.is_active ?? true
+    }
+  } catch (err) {
+    if (err.status === 401) {
+      clearAuthToken()
+      return null
+    }
+    throw err
+  }
+}
+
+/**
+ * Logs out the current session and clears the local JWT token.
+ */
+export async function logoutUser() {
+  try {
+    const token = getAuthToken()
+    if (token) {
+      await apiRequest('/auth/logout', { method: 'POST' }).catch(() => {})
+    }
+  } finally {
+    clearAuthToken()
+  }
 }

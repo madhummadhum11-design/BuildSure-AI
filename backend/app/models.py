@@ -1,6 +1,21 @@
-from datetime import datetime
-from sqlalchemy import Column, String, Integer, DateTime, Text, func
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, func
 from app.database import Base
+
+
+class UserModel(Base):
+    """SQLAlchemy persistent model for authenticated users."""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    email = Column(String(150), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(150), nullable=False, default="Safety Inspector")
+    role = Column(String(80), nullable=False, default="Director of Safety Operations")
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class HazardModel(Base):

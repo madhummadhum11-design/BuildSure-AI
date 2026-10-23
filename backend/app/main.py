@@ -3,15 +3,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import engine, Base
-from app.routers import health, hazards, alerts, vision
+from app.database import engine, SessionLocal, Base
+from app.services import auth_service
+from app.routers import health, auth, hazards, alerts, vision
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler: creates database tables automatically on startup."""
+    """Application lifespan handler: creates database tables and seeds demo account on startup."""
     # Create SQLite database tables if they do not exist
     Base.metadata.create_all(bind=engine)
+
+    # Seed demo account for mentors and evaluators
+    with SessionLocal() as db:
+        auth_service.seed_demo_user(db)
+
     yield
 
 
@@ -36,6 +42,7 @@ app.add_middleware(
 
 # Mount API Routers
 app.include_router(health.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 app.include_router(hazards.router, prefix="/api")
 app.include_router(alerts.router, prefix="/api")
 app.include_router(vision.router, prefix="/api")
@@ -51,6 +58,11 @@ def root_status():
         "docs": "/api/docs",
         "health": "/api/health",
         "endpoints": {
+            "auth": {
+                "login": "/api/auth/login",
+                "register": "/api/auth/register",
+                "me": "/api/auth/me"
+            },
             "hazards": "/api/hazards",
             "alerts": "/api/alerts",
             "vision": "/api/vision/analyze",

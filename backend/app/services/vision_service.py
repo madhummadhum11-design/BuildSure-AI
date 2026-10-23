@@ -288,6 +288,20 @@ class VisionService:
 
             summary = f"Detected {', '.join(summary_parts)}. Preliminary safety review compiled."
 
+        # Compute preliminary risk score (weighted heuristic index 0-100)
+        total_weight = 0
+        for d in detections:
+            sev = (d.severity or "").lower()
+            if sev == "critical":
+                total_weight += 40
+            elif sev == "high":
+                total_weight += 25
+            elif sev == "medium":
+                total_weight += 12
+            else:
+                total_weight += 5
+        risk_score = min(100, total_weight)
+
         disclaimer = (
             "Detections performed by local YOLOv8 pretrained on standard COCO-80 categories. "
             "Standard COCO weights do not verify specialized construction PPE compliance (hard hats, harnesses) "
@@ -302,6 +316,7 @@ class VisionService:
             summary=summary,
             detectionsCount=len(detections),
             cautiousRiskLevel=cautious_risk_level,
+            riskScore=risk_score,
             hazards=detections,
             annotatedImage=annotated_b64,
             modelDisclaimer=disclaimer,

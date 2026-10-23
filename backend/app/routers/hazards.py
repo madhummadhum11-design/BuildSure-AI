@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import HazardModel
+from app.models import HazardModel, UserModel
 from app.schemas import HazardCreate, HazardUpdate, HazardResponse
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/hazards", tags=["Hazards"])
 
@@ -33,7 +34,8 @@ def list_hazards(
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by status (Open, In Review, etc.)"),
     severity: Optional[str] = Query(None, description="Filter by severity (Critical, High, Medium, Low)"),
     category: Optional[str] = Query(None, description="Filter by category"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
 ):
     """Retrieve all logged hazards with optional filtering by site, status, severity, or category."""
     query = db.query(HazardModel)
@@ -51,7 +53,11 @@ def list_hazards(
 
 
 @router.get("/{hazard_id}", response_model=HazardResponse, summary="Get hazard by ID")
-def get_hazard(hazard_id: str, db: Session = Depends(get_db)):
+def get_hazard(
+    hazard_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
     """Retrieve details for a single construction hazard by its ID."""
     hazard = db.query(HazardModel).filter(HazardModel.id == hazard_id).first()
     if not hazard:
@@ -63,12 +69,16 @@ def get_hazard(hazard_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=HazardResponse, status_code=status.HTTP_201_CREATED, summary="Create a new hazard")
-def create_hazard(hazard_in: HazardCreate, db: Session = Depends(get_db)):
+def create_hazard(
+    hazard_in: HazardCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
     """Log a new hazard into the persistent database registry."""
     # Generate ID if not provided
     hazard_id = hazard_in.id or f"HAZ-{random.randint(1000, 9999)}"
 
-    # Check for existing ID conflict
+    # Check for duplicate ID
     existing = db.query(HazardModel).filter(HazardModel.id == hazard_id).first()
     if existing:
         raise HTTPException(
@@ -76,73 +86,92 @@ def create_hazard(hazard_in: HazardCreate, db: Session = Depends(get_db)):
             detail=f"A hazard with ID '{hazard_id}' already exists."
         )
 
-    # Compute risk score if not provided
-    score = hazard_in.risk_score
-    if score is None:
-        score = calculate_risk_score(hazard_in.numeric_severity, hazard_in.numeric_likelihood)
+    # Compute deterministic score if not supplied
+    computed_score = hazard_in.risk_score
+    if computed_score is None:
+        computed_score = calculate_risk_score(
+            hazard_in.numeric_severity,
+            hazard_in.numeric_likelihood
+        )
 
-    # Derive priority and severity alignment
-    priority = hazard_in.priority or determine_priority_from_score(score)
-    severity = hazard_in.severity or priority
+    computed_priority = hazard_in.priority or determine_priority_from_score(computed_score)
+    computed_severity = hazard_in.severity or computed_priority
 
-    hazard_obj = HazardModel(
+    # Default reporter to current authenticated user's name if not explicitly set
+    reporter = hazard_in.reported_by or current_user.full_name or "Site Safety Officer"
+
+    db_hazard = HazardModel(
         id=hazard_id,
         site=hazard_in.site,
         hazard=hazard_in.hazard,
         category=hazard_in.category,
         numeric_severity=hazard_in.numeric_severity,
         numeric_likelihood=hazard_in.numeric_likelihood,
-        risk_score=score,
-        severity=severity,
-        priority=priority,
+        risk_score=computed_score,
+        severity=computed_severity,
+        priority=computed_priority,
         status=hazard_in.status,
         category_recommendation=hazard_in.category_recommendation,
         priority_guidance=hazard_in.priority_guidance,
-        reported_by=hazard_in.reported_by,
-        timestamp=hazard_in.timestamp
+        reported_by=reporter,
+        timestamp=hazard_in.timestamp or "Just now"
     )
 
-    db.add(hazard_obj)
+    db.add(db_hazard)
     db.commit()
-    db.refresh(hazard_obj)
-    return hazard_obj
+    db.refresh(db_hazard)
+    return db_hazard
 
 
 @router.patch("/{hazard_id}", response_model=HazardResponse, summary="Update an existing hazard")
-def update_hazard(hazard_id: str, hazard_update: HazardUpdate, db: Session = Depends(get_db)):
-    """Partially update an existing hazard (status change, severity escalation, recommendation edits)."""
-    hazard_obj = db.query(HazardModel).filter(HazardModel.id == hazard_id).first()
-    if not hazard_obj:
+def update_hazard(
+    hazard_id: str,
+    hazard_in: HazardUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Partially update fields on an existing hazard record (e.g. status transition or resolution)."""
+    db_hazard = db.query(HazardModel).filter(HazardModel.id == hazard_id).first()
+    if not db_hazard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Hazard with ID '{hazard_id}' not found."
         )
 
-    update_data = hazard_update.model_dump(exclude_unset=True)
+    update_dict = hazard_in.model_dump(exclude_unset=True)
 
-    # Apply updates
-    for field, val in update_data.items():
-        setattr(hazard_obj, field, val)
+    # Re-calculate score if numeric severity or likelihood were updated
+    if "numeric_severity" in update_dict or "numeric_likelihood" in update_dict:
+        sev = update_dict.get("numeric_severity", db_hazard.numeric_severity)
+        lik = update_dict.get("numeric_likelihood", db_hazard.numeric_likelihood)
+        new_score = calculate_risk_score(sev, lik)
+        db_hazard.risk_score = new_score
+        db_hazard.priority = determine_priority_from_score(new_score)
+        db_hazard.severity = db_hazard.priority
 
-    # Re-evaluate score if severity or likelihood changed without explicit score override
-    if ("numeric_severity" in update_data or "numeric_likelihood" in update_data) and "risk_score" not in update_data:
-        hazard_obj.risk_score = calculate_risk_score(hazard_obj.numeric_severity, hazard_obj.numeric_likelihood)
+    for field, val in update_dict.items():
+        if hasattr(db_hazard, field) and field not in ("risk_score", "priority", "severity"):
+            setattr(db_hazard, field, val)
 
     db.commit()
-    db.refresh(hazard_obj)
-    return hazard_obj
+    db.refresh(db_hazard)
+    return db_hazard
 
 
-@router.delete("/{hazard_id}", summary="Delete a hazard")
-def delete_hazard(hazard_id: str, db: Session = Depends(get_db)):
-    """Delete a hazard from the database registry."""
-    hazard_obj = db.query(HazardModel).filter(HazardModel.id == hazard_id).first()
-    if not hazard_obj:
+@router.delete("/{hazard_id}", status_code=status.HTTP_200_OK, summary="Delete a hazard")
+def delete_hazard(
+    hazard_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Remove a hazard from the persistent registry."""
+    db_hazard = db.query(HazardModel).filter(HazardModel.id == hazard_id).first()
+    if not db_hazard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Hazard with ID '{hazard_id}' not found."
         )
 
-    db.delete(hazard_obj)
+    db.delete(db_hazard)
     db.commit()
-    return {"status": "success", "message": f"Hazard '{hazard_id}' successfully deleted.", "id": hazard_id}
+    return {"status": "ok", "message": f"Hazard '{hazard_id}' was successfully deleted.", "id": hazard_id}

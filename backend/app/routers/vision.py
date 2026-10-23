@@ -1,8 +1,10 @@
 from typing import Optional
-from fastapi import APIRouter, File, UploadFile, Query, HTTPException, status
+from fastapi import APIRouter, File, UploadFile, Query, HTTPException, Depends, status
 
+from app.models import UserModel
 from app.schemas import VisionAnalysisResponse, VisionStatusResponse
 from app.services.vision_service import vision_service
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/vision", tags=["Computer Vision"])
 
@@ -16,7 +18,7 @@ ALLOWED_MIME_TYPES = {
 
 @router.get("/status", response_model=VisionStatusResponse, summary="Check computer vision model status")
 def get_vision_status():
-    """Returns local YOLO model availability, device, and supported class count."""
+    """Returns local YOLO model availability, device, and supported class count (public status check)."""
     return vision_service.get_status()
 
 
@@ -32,12 +34,13 @@ async def analyze_photo(
         ge=0.05,
         le=0.95,
         description="Optional confidence threshold (0.05 to 0.95)"
-    )
+    ),
+    current_user: UserModel = Depends(get_current_user)
 ):
     """
     Runs local pretrained YOLOv8 inference directly on uploaded image pixels.
     Detects supported objects, marks bounding boxes, formats cautious safety recommendations,
-    and returns an annotated verification image.
+    and returns an annotated verification image. Requires valid authenticated session.
     """
     # 1. Validate content type if provided
     content_type = (image.content_type or "").lower()

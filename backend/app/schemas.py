@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 # -----------------------------------------------------------------------------
@@ -160,6 +160,7 @@ class VisionAnalysisResponse(BaseModel):
     summary: str
     detections_count: int = Field(alias="detectionsCount")
     cautious_risk_level: str = Field(alias="cautiousRiskLevel")
+    risk_score: int = Field(default=0, alias="riskScore")
     hazards: List[VisionDetectionItem]
     annotated_image: Optional[str] = Field(default=None, alias="annotatedImage")
     model_disclaimer: str = Field(alias="modelDisclaimer")
@@ -182,3 +183,80 @@ class VisionStatusResponse(BaseModel):
         populate_by_name=True,
         from_attributes=True
     )
+
+
+# -----------------------------------------------------------------------------
+# User & Authentication Schemas
+# -----------------------------------------------------------------------------
+
+class UserRegisterRequest(BaseModel):
+    email: str = Field(..., min_length=4, max_length=150, description="Valid email address")
+    password: str = Field(..., min_length=6, max_length=100, description="User password (min 6 characters)")
+    full_name: Optional[str] = Field(default="Safety Inspector", alias="fullName")
+    role: Optional[str] = Field(default="Director of Safety Operations")
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+
+
+class UserLoginRequest(BaseModel):
+    email: str = Field(..., description="User email address")
+    password: str = Field(..., description="User password")
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    role: str
+    is_active: bool = True
+    created_at: datetime
+
+    @computed_field
+    @property
+    def fullName(self) -> str:
+        return self.full_name
+
+    @computed_field
+    @property
+    def isActive(self) -> bool:
+        return self.is_active
+
+    @computed_field
+    @property
+    def createdAt(self) -> datetime:
+        return self.created_at
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+    @computed_field
+    @property
+    def accessToken(self) -> str:
+        return self.access_token
+
+    @computed_field
+    @property
+    def tokenType(self) -> str:
+        return self.token_type
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+

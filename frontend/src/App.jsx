@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import './App.css'
 import {
   downloadJsonFile,
@@ -9,6 +10,7 @@ import {
   sanitizeFilenamePart,
   getFormattedDateStamp
 } from './utils/exportUtils'
+import PublicLandingPage from './components/PublicLandingPage'
 import {
   checkBackendHealth,
   fetchHazards,
@@ -19,7 +21,12 @@ import {
   updateAlert,
   deleteAlert,
   analyzePhoto,
-  getVisionStatus
+  getVisionStatus,
+  fetchCurrentUser,
+  logoutUser,
+  getAuthToken,
+  setAuthToken,
+  clearAuthToken
 } from './services/api'
 
 // ============================================================================
@@ -400,15 +407,45 @@ const NAV_CONFIG = {
     subtitle: 'Autonomous Site Safety & Actuarial Hazard Command',
     tag: 'SYSTEM OVERVIEW'
   },
+  'AI Photo Risk Analyzer': {
+    title: 'Construction Photo Risk Analyzer',
+    subtitle: 'Multimodal Vision AI Hazard Detection & PPE Compliance Scanner',
+    tag: 'VISION AI'
+  },
+  'Photo Risk Analyzer': {
+    title: 'Construction Photo Risk Analyzer',
+    subtitle: 'Multimodal Vision AI Hazard Detection & PPE Compliance Scanner',
+    tag: 'VISION AI'
+  },
+  'Hazard Management': {
+    title: 'Hazard Management & Field Triage',
+    subtitle: 'Field Safety Incident Ingestion & Risk Scoring HUD',
+    tag: 'HAZARD REGISTRY'
+  },
+  'Register Hazard': {
+    title: 'Hazard Management & Field Triage',
+    subtitle: 'Field Safety Incident Ingestion & Risk Scoring HUD',
+    tag: 'HAZARD REGISTRY'
+  },
+  'Safety Alerts': {
+    title: 'Safety Alerts',
+    subtitle: 'Review safety issues and take action.',
+    tag: 'SAFETY ALERTS'
+  },
+  'Alerts': {
+    title: 'Safety Alerts',
+    subtitle: 'Review safety issues and take action.',
+    tag: 'SAFETY ALERTS'
+  },
+  'Reports': {
+    title: 'Executive Risk & Safety Reports',
+    subtitle: 'Compiled Automated Dossiers, Audits & Incident Briefs',
+    tag: 'DOSSIER ARCHIVE'
+  },
   'Site Risk Agent': {
     title: 'Site Risk Agent Console',
     subtitle: 'Autonomous Multi-Agent Deliberation & Hazard Forecasting',
     tag: 'AGENTIC OPS'
-  },
-  'Register Hazard': {
-    title: 'Hazard Registration & Field Triage',
-    subtitle: 'Field Safety Incident Ingestion & Prototype Risk Scoring HUD',
-    tag: 'HAZARD REGISTRATION'
   },
   'Safety Monitoring': {
     title: 'Safety & Telemetry Monitoring',
@@ -425,21 +462,6 @@ const NAV_CONFIG = {
     subtitle: 'Loss Ratio Projections, Underwriting Grades & Risk Credits',
     tag: 'ACTUARIAL SIM'
   },
-  'Reports': {
-    title: 'Executive Risk & Safety Reports',
-    subtitle: 'Compiled Automated Dossiers, Audits & Incident Briefs',
-    tag: 'DOSSIER ARCHIVE'
-  },
-  'Alerts': {
-    title: 'Incident Triage & Alert Center',
-    subtitle: 'Prioritized Telemetry Anomalies & Real-Time Field Escalations',
-    tag: 'INCIDENT QUEUE'
-  },
-  'Photo Risk Analyzer': {
-    title: 'Construction Photo Risk Analyzer',
-    subtitle: 'Multimodal Vision AI Hazard Detection & PPE Compliance Scanner',
-    tag: 'VISION AI'
-  },
   'Settings': {
     title: 'Platform & Agent Configuration',
     subtitle: 'Autonomous Scoring Thresholds, Sensor Baselines & Controls',
@@ -448,7 +470,11 @@ const NAV_CONFIG = {
 }
 
 function App() {
-  // Navigation & UI States
+  // Authentication & Session States
+  const [currentUser, setCurrentUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  // Navigation & UI States (Defaults to Dashboard)
   const [activeNav, setActiveNav] = useState('Dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -472,61 +498,87 @@ function App() {
   const [apiStatus, setApiStatus] = useState('checking') // 'checking' | 'connected' | 'offline'
 
   // Non-blocking initial backend check and data synchronization
+  const syncBackendData = async () => {
+    try {
+      const health = await checkBackendHealth()
+      if (health && health.status === 'ok') {
+        setApiStatus('connected')
+
+        // Fetch hazards and alerts in parallel
+        const [backendHazards, backendAlerts] = await Promise.allSettled([
+          fetchHazards(),
+          fetchAlerts()
+        ])
+
+        // Merge hazards: backend records take precedence for matching IDs; new backend records prepended; demo records preserved
+        if (backendHazards.status === 'fulfilled' && Array.isArray(backendHazards.value) && backendHazards.value.length > 0) {
+          setHazards(prevHazards => {
+            const backendMap = new Map(backendHazards.value.map(h => [h.id, h]))
+            const updatedExisting = prevHazards.map(h => backendMap.has(h.id) ? backendMap.get(h.id) : h)
+            const existingIds = new Set(prevHazards.map(h => h.id))
+            const brandNewFromBackend = backendHazards.value.filter(h => !existingIds.has(h.id))
+            return [...brandNewFromBackend, ...updatedExisting]
+          })
+        }
+
+        // Merge alerts: backend records take precedence for matching IDs; new backend records prepended; demo records preserved
+        if (backendAlerts.status === 'fulfilled' && Array.isArray(backendAlerts.value) && backendAlerts.value.length > 0) {
+          setAlerts(prevAlerts => {
+            const backendMap = new Map(backendAlerts.value.map(a => [a.id, a]))
+            const updatedExisting = prevAlerts.map(a => backendMap.has(a.id) ? backendMap.get(a.id) : a)
+            const existingIds = new Set(prevAlerts.map(a => a.id))
+            const brandNewFromBackend = backendAlerts.value.filter(a => !existingIds.has(a.id))
+            return [...brandNewFromBackend, ...updatedExisting]
+          })
+        }
+      } else {
+        setApiStatus('offline')
+      }
+    } catch (err) {
+      console.debug('[SITEGUARD] Backend check error (using local storage fallback):', err)
+      setApiStatus('offline')
+    }
+  }
+
+  // Initial check on mount: verify auth token and session
   useEffect(() => {
     let isMounted = true
 
-    async function syncBackendData() {
+    async function initSession() {
       try {
-        const health = await checkBackendHealth()
-        if (!isMounted) return
+        const health = await checkBackendHealth().catch(() => null)
+        if (isMounted) {
+          setApiStatus(health && health.status === 'ok' ? 'connected' : 'offline')
+        }
 
-        if (health && health.status === 'ok') {
-          setApiStatus('connected')
-
-          // Fetch hazards and alerts in parallel
-          const [backendHazards, backendAlerts] = await Promise.allSettled([
-            fetchHazards(),
-            fetchAlerts()
-          ])
-
-          if (!isMounted) return
-
-          // Merge hazards: backend records take precedence for matching IDs; new backend records prepended; demo records preserved
-          if (backendHazards.status === 'fulfilled' && Array.isArray(backendHazards.value) && backendHazards.value.length > 0) {
-            setHazards(prevHazards => {
-              const backendMap = new Map(backendHazards.value.map(h => [h.id, h]))
-              const updatedExisting = prevHazards.map(h => backendMap.has(h.id) ? backendMap.get(h.id) : h)
-              const existingIds = new Set(prevHazards.map(h => h.id))
-              const brandNewFromBackend = backendHazards.value.filter(h => !existingIds.has(h.id))
-              return [...brandNewFromBackend, ...updatedExisting]
-            })
+        const token = getAuthToken()
+        if (token) {
+          const userProfile = await fetchCurrentUser().catch(() => null)
+          if (isMounted && userProfile) {
+            setCurrentUser(userProfile)
+            syncBackendData()
           }
-
-          // Merge alerts: backend records take precedence for matching IDs; new backend records prepended; demo records preserved
-          if (backendAlerts.status === 'fulfilled' && Array.isArray(backendAlerts.value) && backendAlerts.value.length > 0) {
-            setAlerts(prevAlerts => {
-              const backendMap = new Map(backendAlerts.value.map(a => [a.id, a]))
-              const updatedExisting = prevAlerts.map(a => backendMap.has(a.id) ? backendMap.get(a.id) : a)
-              const existingIds = new Set(prevAlerts.map(a => a.id))
-              const brandNewFromBackend = backendAlerts.value.filter(a => !existingIds.has(a.id))
-              return [...brandNewFromBackend, ...updatedExisting]
-            })
-          }
-        } else {
-          setApiStatus('offline')
         }
       } catch (err) {
+        console.debug('[SITEGUARD] Auth session check error:', err)
+      } finally {
         if (isMounted) {
-          console.debug('[SITEGUARD] Backend check error (using local storage fallback):', err)
-          setApiStatus('offline')
+          setAuthLoading(false)
         }
       }
     }
 
-    syncBackendData()
+    initSession()
+
+    const handleSessionExpired = (e) => {
+      setCurrentUser(null)
+      showToast(e.detail?.message || 'Session expired. Please sign in again.')
+    }
+    window.addEventListener('siteguard:session-expired', handleSessionExpired)
 
     return () => {
       isMounted = false
+      window.removeEventListener('siteguard:session-expired', handleSessionExpired)
     }
   }, [])
 
@@ -640,18 +692,22 @@ function App() {
     containerRef.current.style.setProperty('--mouse-y', `${y}px`)
   }
 
-  // Sidebar navigation configuration
+  const handleLogout = async () => {
+    try {
+      await logoutUser()
+    } finally {
+      setCurrentUser(null)
+      showToast('Signed out of SITEGUARD AI.')
+    }
+  }
+
+  // Sidebar navigation configuration: Strictly 5 Primary Navigation Items
   const navItems = [
     { name: 'Dashboard', icon: 'dashboard' },
-    { name: 'Site Risk Agent', icon: 'agent' },
-    { name: 'Photo Risk Analyzer', icon: 'camera' },
-    { name: 'Register Hazard', icon: 'hazard' },
-    { name: 'Safety Monitoring', icon: 'safety' },
-    { name: 'Compliance', icon: 'compliance' },
-    { name: 'Insurance Risk', icon: 'insurance' },
-    { name: 'Reports', icon: 'reports' },
-    { name: 'Alerts', icon: 'alerts', badge: alerts.filter(a => a.status !== 'Acknowledged').length },
-    { name: 'Settings', icon: 'settings' }
+    { name: 'AI Photo Risk Analyzer', icon: 'camera' },
+    { name: 'Hazard Management', icon: 'hazard' },
+    { name: 'Safety Alerts', icon: 'alerts', badge: alerts.filter(a => a.status !== 'Acknowledged').length },
+    { name: 'Reports', icon: 'reports' }
   ]
 
   // Filtered sites based on site selector
@@ -875,6 +931,45 @@ function App() {
       setIsSimulatingSweep(false)
       showToast(`[SIMULATED] Risk sweep completed for ${selectedSite}. Telemetry nominal.`)
     }, 1100)
+  }
+
+  if (authLoading) {
+    return (
+      <div className="landing-page-root" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', flexDirection: 'column', gap: '16px' }}>
+        <div className="brand-icon-shield" style={{ width: '48px', height: '48px' }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+          SITEGUARD AI &bull; Initializing Security Command Console...
+        </div>
+      </div>
+    )
+  }
+
+  if (!currentUser) {
+    return (
+      <PublicLandingPage
+        onLoginSuccess={(user, token) => {
+          if (token) {
+            setAuthToken(token)
+          }
+          const normalized = {
+            id: user?.id,
+            email: user?.email,
+            full_name: user?.full_name || user?.fullName || 'Safety Officer',
+            fullName: user?.fullName || user?.full_name || 'Safety Officer',
+            role: user?.role || 'Director of Safety Operations'
+          }
+          setCurrentUser(normalized)
+          syncBackendData()
+          showToast(`Welcome back, ${normalized.full_name}!`)
+        }}
+        apiStatus={apiStatus}
+      />
+    )
   }
 
   return (
@@ -1165,20 +1260,37 @@ function App() {
                       setShowNotifications(false)
                     }}
                   >
-                    Open Full Incident Triage &rarr;
+                    Open Safety Alerts &rarr;
                   </button>
                 </div>
               )}
             </div>
 
-            {/* Operator Profile */}
+            {/* Operator Profile & Sign Out */}
             <div className="operator-badge">
-              <div className="operator-avatar">AM</div>
+              <div className="operator-avatar">
+                {currentUser?.full_name ? currentUser.full_name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() : 'SO'}
+              </div>
               <div className="operator-meta">
-                <span className="operator-callsign">A. Morgan</span>
-                <span className="operator-role">Director of Safety &amp; Risk</span>
+                <span className="operator-callsign">{currentUser?.full_name || 'Safety Officer'}</span>
+                <span className="operator-role">{currentUser?.role || 'Safety & Risk'}</span>
               </div>
             </div>
+
+            <button
+              type="button"
+              className="header-logout-btn"
+              onClick={handleLogout}
+              title="Sign out of SITEGUARD AI"
+              aria-label="Sign out"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+              <span>Sign Out</span>
+            </button>
           </div>
         </header>
 
@@ -1210,7 +1322,13 @@ function App() {
               sweepResult={sweepResult}
               onDismissSweepResult={() => setSweepResult(null)}
               onOpenKpiDetail={(type) => setActiveKpiModal(type)}
-              onNavigate={setActiveNav}
+              onNavigate={(target) => {
+                if (target === 'Photo Risk Analyzer' || target === 'AI Photo Risk Analyzer') setActiveNav('AI Photo Risk Analyzer')
+                else if (target === 'Register Hazard' || target === 'Hazard Management') setActiveNav('Hazard Management')
+                else if (target === 'Alerts' || target === 'Safety Alerts') setActiveNav('Safety Alerts')
+                else if (target === 'Reports') setActiveNav('Reports')
+                else setActiveNav(target)
+              }}
             />
           )}
 
@@ -1225,24 +1343,35 @@ function App() {
             />
           )}
 
-          {activeNav === 'Photo Risk Analyzer' && (
+          {(activeNav === 'AI Photo Risk Analyzer' || activeNav === 'Photo Risk Analyzer') && (
             <PhotoRiskAnalyzerView
               allSites={ALL_SITES}
               selectedSite={selectedSite}
               onRegisterHazard={handleRegisterHazard}
               onShowToast={showToast}
-              onNavigate={setActiveNav}
+              onNavigate={(target) => {
+                if (target === 'Photo Risk Analyzer' || target === 'AI Photo Risk Analyzer') setActiveNav('AI Photo Risk Analyzer')
+                else if (target === 'Register Hazard' || target === 'Hazard Management') setActiveNav('Hazard Management')
+                else if (target === 'Alerts' || target === 'Safety Alerts') setActiveNav('Safety Alerts')
+                else if (target === 'Reports') setActiveNav('Reports')
+                else setActiveNav(target)
+              }}
               apiStatus={apiStatus}
             />
           )}
 
-          {activeNav === 'Register Hazard' && (
+          {(activeNav === 'Hazard Management' || activeNav === 'Register Hazard') && (
             <HazardRegistrationView
               allSites={ALL_SITES}
               selectedSite={selectedSite}
               hazards={hazards}
               onRegisterHazard={handleRegisterHazard}
-              onNavigate={setActiveNav}
+              onNavigate={(target) => {
+                if (target === 'Photo Risk Analyzer' || target === 'AI Photo Risk Analyzer') setActiveNav('AI Photo Risk Analyzer')
+                else if (target === 'Alerts' || target === 'Safety Alerts') setActiveNav('Safety Alerts')
+                else if (target === 'Reports') setActiveNav('Reports')
+                else setActiveNav(target)
+              }}
               onShowToast={showToast}
               onToggleHazard={handleToggleHazard}
             />
@@ -1283,11 +1412,12 @@ function App() {
             />
           )}
 
-          {activeNav === 'Alerts' && (
+          {(activeNav === 'Safety Alerts' || activeNav === 'Alerts') && (
             <AlertsCenterView
               alerts={alerts}
               onDismissAlert={handleDismissAlert}
               onAcknowledgeAlert={handleAcknowledgeAlert}
+              onAcknowledgeAll={handleMarkAllAlertsAcknowledged}
               onClearAll={() => {
                 setAlerts([])
                 showToast('All active alerts acknowledged and cleared.')
@@ -3208,10 +3338,30 @@ const SAMPLE_PRESETS = [
   }
 ]
 
+// Configurable UI risk score classification bands (0-29 Low, 30-59 Medium, 60-79 High, 80-100 Very High)
+// (Heuristic preliminary decision-support; not official OSHA regulatory standards)
+const RISK_SCORE_BANDS = [
+  { min: 0, max: 29, label: 'Low', badgeClass: 'low', color: 'var(--color-low, #10b981)', explanation: 'Site imagery indicates standard baseline conditions with minimal detected risk factors.' },
+  { min: 30, max: 59, label: 'Medium', badgeClass: 'medium', color: 'var(--color-medium, #f59e0b)', explanation: 'Moderate safety considerations observed; review workforce PPE and site staging conditions.' },
+  { min: 60, max: 79, label: 'High', badgeClass: 'high', color: 'var(--color-high, #f97316)', explanation: 'Elevated risk indicators detected requiring supervisory review and proactive corrective controls.' },
+  { min: 80, max: 100, label: 'Very High', badgeClass: 'critical', color: 'var(--color-critical, #ef4444)', explanation: 'Significant hazards or critical safety vectors identified requiring immediate verification and remediation.' }
+]
+
+function getRiskBand(score) {
+  const clamped = Math.max(0, Math.min(100, Math.round(score || 0)))
+  for (const band of RISK_SCORE_BANDS) {
+    if (clamped >= band.min && clamped <= band.max) {
+      return band
+    }
+  }
+  return RISK_SCORE_BANDS[0]
+}
+
 // Methodical hazard weighting formula calculation
 function computePhotoRiskScore(hazards = []) {
   if (!hazards || hazards.length === 0) {
-    return { score: 0, category: 'Low', badgeClass: 'low' }
+    const band = getRiskBand(0)
+    return { score: 0, category: band.label, badgeClass: band.badgeClass }
   }
   let total = 0
   hazards.forEach(h => {
@@ -3222,19 +3372,8 @@ function computePhotoRiskScore(hazards = []) {
     else total += 5
   })
   const score = Math.min(100, total)
-  let category = 'Low'
-  let badgeClass = 'low'
-  if (score >= 75) {
-    category = 'Critical'
-    badgeClass = 'critical'
-  } else if (score >= 50) {
-    category = 'High'
-    badgeClass = 'high'
-  } else if (score >= 25) {
-    category = 'Medium'
-    badgeClass = 'medium'
-  }
-  return { score, category, badgeClass }
+  const band = getRiskBand(score)
+  return { score, category: band.label, badgeClass: band.badgeClass }
 }
 
 function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onShowToast, onNavigate, apiStatus }) {
@@ -3252,6 +3391,10 @@ function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onSho
   const [analysisError, setAnalysisError] = useState(null)
   const [analysisResults, setAnalysisResults] = useState(null)
   const [registeredIds, setRegisteredIds] = useState(new Set())
+  const [selectedFindingIds, setSelectedFindingIds] = useState(new Set())
+  const [showRegisterModal, setShowRegisterModal] = useState(false)
+  const [showTechDetails, setShowTechDetails] = useState(false)
+  const [isRegistering, setIsRegistering] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [showKeyModal, setShowKeyModal] = useState(false)
   const [showScoringDetails, setShowScoringDetails] = useState(false)
@@ -3322,6 +3465,7 @@ function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onSho
     })
     setAnalysisResults(null)
     setRegisteredIds(new Set())
+    setSelectedFindingIds(new Set())
   }
 
   const handleFileInputChange = (e) => {
@@ -3363,6 +3507,7 @@ function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onSho
     setAnalysisResults(null)
     setAnalysisError(null)
     setRegisteredIds(new Set())
+    setSelectedFindingIds(new Set())
     if (fileInputRef.current) fileInputRef.current.value = ''
     onShowToast('Uploaded photo removed.')
   }
@@ -3382,6 +3527,7 @@ function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onSho
     setSite(preset.site)
     setAnalysisResults(null)
     setRegisteredIds(new Set())
+    setSelectedFindingIds(new Set())
     onShowToast(`Sample scenario loaded: ${preset.title}`)
   }
 
@@ -3397,17 +3543,17 @@ function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onSho
         const data = await analyzePhoto(selectedImageFile, confThreshold)
         const hazardsList = Array.isArray(data.hazards) ? data.hazards : []
         const { score, category } = computePhotoRiskScore(hazardsList)
-
-        const riskCategory = data.cautiousRiskLevel || category
+        const actualScore = data.riskScore !== undefined ? data.riskScore : score
+        const band = getRiskBand(actualScore)
 
         setAnalysisResults({
           mode: 'yolo',
           provider: data.model || 'YOLOv8n (Local Inference)',
           summary: data.summary || 'YOLO computer vision inference complete.',
           hazards: hazardsList,
-          score,
-          category: riskCategory,
-          badgeClass: riskCategory.toLowerCase() === 'indeterminate' ? 'medium' : (riskCategory.toLowerCase() === 'high' ? 'high' : riskCategory.toLowerCase() === 'critical' ? 'critical' : riskCategory.toLowerCase() === 'medium' ? 'medium' : 'low'),
+          score: actualScore,
+          category: band.label,
+          badgeClass: band.badgeClass,
           inferenceTimeMs: data.inferenceTimeMs,
           detectionsCount: data.detectionsCount,
           modelDisclaimer: data.modelDisclaimer,
@@ -3620,13 +3766,81 @@ Respond strictly with valid JSON without markdown fences matching:
     onShowToast(`[HAZARD REGISTERED] ${hazard.name} added to site registry & alert triage.`)
   }
 
-  const handleRegisterAll = () => {
-    if (!analysisResults || !analysisResults.hazards) return
-    analysisResults.hazards.forEach(h => {
-      if (!registeredIds.has(h.id)) {
-        handleRegisterDetectedHazard(h)
+  // Toggle single finding selection for registration
+  const toggleFindingSelection = (id) => {
+    setSelectedFindingIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  // Toggle select all findings
+  const toggleSelectAll = () => {
+    const registrable = recommendedSafetyChecks.filter(
+      c => !c.rawHazards?.every(rh => registeredIds.has(rh.id))
+    )
+    if (selectedFindingIds.size >= registrable.length && registrable.length > 0) {
+      setSelectedFindingIds(new Set())
+    } else {
+      setSelectedFindingIds(new Set(registrable.map(c => c.id)))
+    }
+  }
+
+  // Execute batch registration after modal confirmation
+  const handleConfirmBatchRegister = () => {
+    if (selectedFindingIds.size === 0) return
+    setIsRegistering(true)
+
+    const selectedCards = recommendedSafetyChecks.filter(c => selectedFindingIds.has(c.id))
+    let registeredCount = 0
+    const newlyRegisteredIds = new Set([...registeredIds])
+
+    selectedCards.forEach(card => {
+      const newId = `HAZ-${Math.floor(2000 + Math.random() * 8000)}`
+      const numSev = card.severity === 'Critical' ? 5 : card.severity === 'High' ? 4 : card.severity === 'Medium' ? 3 : 2
+      const numLik = numSev
+      const engineName = analysisResults?.mode === 'yolo'
+        ? 'YOLOv8 Computer Vision'
+        : isLiveConfigured
+        ? 'Gemini 1.5 Flash'
+        : 'Demonstration Mode'
+
+      const newHazardEntry = {
+        id: newId,
+        site: site,
+        hazard: card.title,
+        category: card.category || 'General',
+        description: `${card.explanation} Corrective action: ${card.action}. Identified via Photo Risk Analyzer (${engineName}).`,
+        severity: card.severity,
+        priority: card.severity,
+        numericSeverity: numSev,
+        numericLikelihood: numLik,
+        riskScore: calculateRiskScore(numSev, numLik),
+        categoryRecommendation: card.action,
+        priorityGuidance: getPriorityGuidance(card.severity),
+        status: 'Open',
+        reportedBy: `Photo Risk Analyzer (${engineName})`,
+        timestamp: 'Just now'
+      }
+
+      onRegisterHazard(newHazardEntry)
+      registeredCount++
+
+      newlyRegisteredIds.add(card.id)
+      if (card.rawHazards) {
+        card.rawHazards.forEach(rh => newlyRegisteredIds.add(rh.id))
       }
     })
+
+    setRegisteredIds(newlyRegisteredIds)
+    setIsRegistering(false)
+    setShowRegisterModal(false)
+    onShowToast(`[HAZARD REGISTERED] ${registeredCount} safety finding(s) registered for site '${site}'.`)
   }
 
   const handleSaveApiKey = () => {
@@ -3651,6 +3865,171 @@ Respond strictly with valid JSON without markdown fences matching:
     setKeyInput('')
     onShowToast('Gemini API key removed. Reverting to demonstration evaluation mode.')
   }
+
+  // Recommended Safety Checks (Max 3-5 concise action cards)
+  const recommendedSafetyChecks = useMemo(() => {
+    if (!analysisResults || !analysisResults.hazards) return []
+    const hazards = analysisResults.hazards
+    const cards = []
+
+    // 1. Workforce presence & PPE check
+    const personDetections = hazards.filter(h => {
+      const cls = (h.className || '').toLowerCase()
+      const name = (h.name || '').toLowerCase()
+      return cls === 'person' || name.includes('worker') || name.includes('person')
+    })
+    if (personDetections.length > 0) {
+      const pCount = personDetections.length
+      cards.push({
+        id: 'check-personnel',
+        title: `Workforce PPE & Access Protocol (${pCount} ${pCount === 1 ? 'person' : 'workers'})`,
+        explanation: `${pCount} worker(s) identified in visual field. Pretrained model confirms presence but cannot verify hard hats, protective eyewear, or high-vis vests.`,
+        action: 'Conduct physical spot-check for OSHA 1926.100 PPE compliance and active zone permit.',
+        category: 'PPE & Personnel',
+        severity: 'Medium',
+        isOrdinaryObject: false,
+        rawHazards: personDetections
+      })
+    }
+
+    // 2. Heavy Vehicles & Equipment Check
+    const vehicleClasses = ['truck', 'bus', 'car', 'train', 'motorcycle']
+    const vehicleDetections = hazards.filter(h => {
+      const cls = (h.className || '').toLowerCase()
+      const cat = (h.category || '').toLowerCase()
+      return vehicleClasses.includes(cls) || (cat.includes('equipment') && !cls.includes('person'))
+    })
+    if (vehicleDetections.length > 0) {
+      const vNames = [...new Set(vehicleDetections.map(v => v.className || 'vehicle'))].join(', ')
+      cards.push({
+        id: 'check-vehicles',
+        title: `Vehicle & Machinery Transit Corridor (${vNames})`,
+        explanation: `Active mobile equipment or transport vehicles detected within the visual sector.`,
+        action: 'Verify pedestrian barricades, audible backup alarms, and designated spotter coverage.',
+        category: 'Equipment hazard',
+        severity: 'High',
+        isOrdinaryObject: false,
+        rawHazards: vehicleDetections
+      })
+    }
+
+    // 3. Domain-Specific Construction Hazards (from Live Gemini or Presets)
+    const specificHazards = hazards.filter(h => {
+      const cls = (h.className || '').toLowerCase()
+      const cat = (h.category || '').toLowerCase()
+      const name = (h.name || '').toLowerCase()
+      return !cls.includes('person') && !vehicleClasses.includes(cls) &&
+        (cat.includes('fall') || cat.includes('excavation') || cat.includes('scaffold') || cat.includes('electrical') || name.includes('edge') || name.includes('trench') || name.includes('shoring') || name.includes('guardrail'))
+    })
+
+    specificHazards.forEach((h, idx) => {
+      if (cards.length < 4) {
+        const cleanExpl = h.explanation ? h.explanation.split('.')[0] + '.' : 'Inspection flagged safety non-compliance.'
+        cards.push({
+          id: `check-hazard-${h.id || idx}`,
+          title: h.name,
+          explanation: cleanExpl,
+          action: h.recommendation || 'Inspect sector and remediate hazard per site safety protocol.',
+          category: h.category || 'Site Safety',
+          severity: h.severity || 'Medium',
+          isOrdinaryObject: false,
+          rawHazards: [h]
+        })
+      }
+    })
+
+    // 4. Ordinary COCO objects requiring contextual review (laptops, chairs, TVs, keyboards, etc.)
+    const ordinaryClasses = [
+      'chair', 'sofa', 'couch', 'tv', 'laptop', 'keyboard', 'mouse', 'cell phone',
+      'bottle', 'cup', 'book', 'clock', 'potted plant', 'backpack', 'handbag',
+      'dining table', 'sink', 'refrigerator', 'microwave', 'oven', 'toaster', 'bowl'
+    ]
+    const ordinaryDetections = hazards.filter(h => {
+      const cls = (h.className || '').toLowerCase()
+      return ordinaryClasses.includes(cls) || h.category === 'Housekeeping & Staging' || (h.name && h.name.includes('Staging Material'))
+    })
+
+    if (ordinaryDetections.length > 0 && cards.length < 5) {
+      const distinctNames = [...new Set(ordinaryDetections.map(d => d.className || 'object'))]
+      cards.push({
+        id: 'check-contextual',
+        title: `Contextual Review: Peripheral Items (${distinctNames.slice(0, 3).join(', ')})`,
+        explanation: `Identified common objects (${distinctNames.join(', ')}). Ordinary items are not inherent construction hazards, but require contextual review to ensure pathways remain clear.`,
+        action: 'Confirm items do not obstruct designated emergency egress corridors or electrical panels.',
+        category: 'Contextual Review',
+        severity: 'Low',
+        isOrdinaryObject: true,
+        rawHazards: ordinaryDetections
+      })
+    }
+
+    // 5. Any remaining hazards up to 5
+    hazards.forEach((h, idx) => {
+      if (cards.length < 5 && !cards.some(c => c.rawHazards?.some(rh => rh.id === h.id))) {
+        cards.push({
+          id: `check-other-${h.id || idx}`,
+          title: h.name,
+          explanation: h.explanation ? h.explanation.split('.')[0] + '.' : 'Observed scene element requiring attention.',
+          action: h.recommendation || 'Verify item placement against site housekeeping plan.',
+          category: h.category || 'General',
+          severity: h.severity || 'Low',
+          isOrdinaryObject: false,
+          rawHazards: [h]
+        })
+      }
+    })
+
+    return cards.slice(0, 5)
+  }, [analysisResults])
+
+  // Automatically select un-registered safety checks when new results arrive
+  useEffect(() => {
+    if (recommendedSafetyChecks.length > 0) {
+      const unreg = recommendedSafetyChecks
+        .filter(c => !c.rawHazards?.every(rh => registeredIds.has(rh.id)))
+        .map(c => c.id)
+      setSelectedFindingIds(new Set(unreg))
+    } else {
+      setSelectedFindingIds(new Set())
+    }
+  }, [recommendedSafetyChecks, registeredIds])
+
+  // Metrics for Compact Summary
+  const hazardsList = analysisResults?.hazards || []
+  const peopleCount = hazardsList.filter(h => {
+    const cls = (h.className || '').toLowerCase()
+    const name = (h.name || '').toLowerCase()
+    return cls === 'person' || name.includes('worker') || name.includes('person')
+  }).length
+
+  const otherCount = Math.max(0, (analysisResults?.detectionsCount ?? hazardsList.length) - peopleCount)
+
+  let reviewStatus = 'Nominal / Baseline'
+  let reviewStatusBadge = 'low'
+  let reviewStatusDesc = 'No immediate hazards flagged'
+
+  if (hazardsList.some(h => (h.severity || '').toLowerCase() === 'critical')) {
+    reviewStatus = 'Action Required'
+    reviewStatusBadge = 'critical'
+    reviewStatusDesc = 'High-risk condition observed'
+  } else if (hazardsList.some(h => (h.severity || '').toLowerCase() === 'high')) {
+    reviewStatus = 'Action Required'
+    reviewStatusBadge = 'high'
+    reviewStatusDesc = 'Safety controls verification needed'
+  } else if (peopleCount > 0) {
+    reviewStatus = 'Review Recommended'
+    reviewStatusBadge = 'medium'
+    reviewStatusDesc = 'Personnel present; verify PPE & permits'
+  } else if (otherCount > 0) {
+    reviewStatus = 'Contextual Review'
+    reviewStatusBadge = 'low'
+    reviewStatusDesc = 'Scene objects detected'
+  }
+
+  const registrableCards = recommendedSafetyChecks.filter(
+    c => !c.rawHazards?.every(rh => registeredIds.has(rh.id))
+  )
+  const registrableCount = registrableCards.length
 
   return (
     <div className="view-module-container animate-entrance">
@@ -3925,7 +4304,7 @@ Respond strictly with valid JSON without markdown fences matching:
                   <line x1="16" y1="17" x2="8" y2="17" />
                 </svg>
               </div>
-              <span className="panel-heading">Inspection Findings &amp; Risk Metrics</span>
+              <span className="panel-heading">Inspection Findings &amp; Safety Checks</span>
             </div>
             {analysisResults && (
               <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)' }}>
@@ -3947,176 +4326,370 @@ Respond strictly with valid JSON without markdown fences matching:
                 Awaiting Photo Analysis
               </div>
               <div style={{ fontSize: '12px', maxWidth: '340px', margin: '0 auto', lineHeight: 1.5 }}>
-                Upload a construction photograph or select a sample scenario on the left, then trigger analysis to view identified hazards, severity tiers, and corrective actions.
+                Upload a construction photograph or select a sample scenario on the left, then trigger analysis to view recommended safety checks, workforce counts, and actionable findings.
               </div>
             </div>
           ) : (
-            /* Populated Results View */
+            /* Redesigned Populated Results View */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* Overall Score Card */}
-              <div className="view-stats-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
-                <div className="view-stat-card">
-                  <span className="view-stat-label">Preliminary Risk Score</span>
-                  <span className="view-stat-value" style={{ color: analysisResults.score >= 75 ? 'var(--color-critical)' : analysisResults.score >= 50 ? 'var(--color-high)' : analysisResults.score >= 25 ? 'var(--color-medium)' : 'var(--color-low)' }}>
-                    {analysisResults.score} <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>/ 100</span>
+              {/* Visual Risk Indicator Hero Panel */}
+              {(() => {
+                const scoreVal = typeof analysisResults.score === 'number' ? Math.round(analysisResults.score) : 0
+                const riskBand = getRiskBand(scoreVal)
+                const radius = 48
+                const circumference = 2 * Math.PI * radius
+                const strokeOffset = circumference - (scoreVal / 100) * circumference
+
+                return (
+                  <div className="analyzer-risk-indicator-panel">
+                    {/* Left: Circular Progress Ring */}
+                    <div className="analyzer-ring-container">
+                      <svg className="analyzer-progress-ring" width="124" height="124" viewBox="0 0 124 124">
+                        <circle
+                          className="analyzer-ring-track"
+                          cx="62"
+                          cy="62"
+                          r={radius}
+                          strokeWidth="10"
+                        />
+                        <circle
+                          className="analyzer-ring-fill"
+                          cx="62"
+                          cy="62"
+                          r={radius}
+                          strokeWidth="10"
+                          strokeDasharray={circumference}
+                          strokeDashoffset={strokeOffset}
+                          style={{ stroke: riskBand.color }}
+                        />
+                      </svg>
+                      <div className="analyzer-ring-content">
+                        <span className="analyzer-ring-pct" style={{ color: riskBand.color }}>
+                          {scoreVal}%
+                        </span>
+                        <span className="analyzer-ring-label">RISK INDEX</span>
+                      </div>
+                    </div>
+
+                    {/* Right: Score Label, Explanation & Advisory Clarification */}
+                    <div className="analyzer-risk-details">
+                      <div className="analyzer-risk-header">
+                        <div
+                          className="analyzer-risk-tier-badge"
+                          style={{
+                            borderColor: riskBand.color,
+                            color: riskBand.color,
+                            background: `color-mix(in srgb, ${riskBand.color} 14%, transparent)`
+                          }}
+                        >
+                          <span className="badge-dot" style={{ background: riskBand.color }} />
+                          {riskBand.label} Risk Tier ({riskBand.min}–{riskBand.max}%)
+                        </div>
+                        <span className="analyzer-risk-advisory-pill">
+                          Advisory Heuristic &bull; Non-OSHA Standard
+                        </span>
+                      </div>
+
+                      {/* 1 Simple Sentence Explaining the Score */}
+                      <div className="analyzer-risk-explanation">
+                        {riskBand.explanation}
+                      </div>
+
+                      {/* Clear Distinction: Preliminary Risk Score != Probability of Accident */}
+                      <div className="analyzer-risk-disclaimer">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="12" y1="16" x2="12" y2="12" />
+                          <line x1="12" y1="8" x2="12.01" y2="8" />
+                        </svg>
+                        <span>
+                          <strong>Preliminary Risk Score:</strong> This index reflects observed visual hazard severity in the photo. It is <em>not</em> a validated statistical probability or likelihood of an accident occurring.
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* 1. Compact Summary Strip */}
+              <div className="analyzer-compact-summary-row">
+                <div className="analyzer-compact-stat">
+                  <span className="analyzer-compact-label">People Detected</span>
+                  <span className="analyzer-compact-val" style={{ color: peopleCount > 0 ? 'var(--cyan-primary)' : 'var(--text-muted)' }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                      <circle cx="12" cy="7" r="4" />
+                    </svg>
+                    {peopleCount}
                   </span>
-                  <span className="view-stat-sub">Weighted Hazard Index</span>
+                  <span className="analyzer-compact-sub">
+                    {peopleCount === 1 ? '1 worker identified' : `${peopleCount} workers in visual field`}
+                  </span>
                 </div>
 
-                <div className="view-stat-card">
-                  <span className="view-stat-label">Overall Severity Tier</span>
-                  <span className="view-stat-value">
-                    <span className={`cyber-badge ${analysisResults.badgeClass}`}>
+                <div className="analyzer-compact-stat">
+                  <span className="analyzer-compact-label">Other Objects Detected</span>
+                  <span className="analyzer-compact-val" style={{ color: otherCount > 0 ? '#ffffff' : 'var(--text-muted)' }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+                      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+                    </svg>
+                    {otherCount}
+                  </span>
+                  <span className="analyzer-compact-sub">
+                    {otherCount > 0 ? 'Equipment, staging, or peripheral' : 'No peripheral items flagged'}
+                  </span>
+                </div>
+
+                <div className="analyzer-compact-stat">
+                  <span className="analyzer-compact-label">Overall Review Status</span>
+                  <span className="analyzer-compact-val">
+                    <span className={`cyber-badge ${reviewStatusBadge}`}>
                       <span className="badge-dot" />
-                      {analysisResults.category.toUpperCase()}
+                      {reviewStatus}
                     </span>
                   </span>
-                  <span className="view-stat-sub">OSHA Escalation Class</span>
-                </div>
-
-                <div className="view-stat-card">
-                  <span className="view-stat-label">Suspected Hazards</span>
-                  <span className="view-stat-value" style={{ color: analysisResults.hazards.length > 0 ? 'var(--cyan-primary)' : 'var(--color-low)' }}>
-                    {analysisResults.hazards.length} FLAGGED
-                  </span>
-                  <span className="view-stat-sub">{analysisResults.hazards.filter(h => h.severity === 'Critical').length} Critical</span>
-                </div>
-
-                <div className="view-stat-card">
-                  <span className="view-stat-label">Detection Engine</span>
-                  <span className="view-stat-value" style={{ fontSize: '13px', color: analysisResults.mode === 'yolo' || analysisResults.mode === 'live' ? 'var(--color-low)' : 'var(--color-medium)' }}>
-                    {analysisResults.mode === 'yolo' ? 'YOLOv8 (LOCAL)' : analysisResults.mode === 'live' ? 'GEMINI 1.5' : 'DEMO MODE'}
-                  </span>
-                  <span className="view-stat-sub">
-                    {analysisResults.mode === 'yolo' ? `${analysisResults.inferenceTimeMs || 45}ms Inference` : analysisResults.mode === 'live' ? 'Cloud Multimodal AI' : 'Synthetic Baseline'}
+                  <span className="analyzer-compact-sub">
+                    {reviewStatusDesc}
                   </span>
                 </div>
               </div>
 
-              {/* Scoring Formula Disclosure */}
-              <div className="analyzer-score-breakdown">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 600, color: '#ffffff' }}>Scoring Methodology &amp; Weighting Formula:</span>
-                  <button
-                    type="button"
-                    style={{ fontSize: '11px', color: 'var(--cyan-primary)', cursor: 'pointer' }}
-                    onClick={() => setShowScoringDetails(!showScoringDetails)}
-                  >
-                    {showScoringDetails ? '▲ Hide Details' : '▼ View Breakdown'}
-                  </button>
+              {/* 2. YOLOv8 COCO-80 Model Scope Notice */}
+              <div className="analyzer-model-notice">
+                <div className="analyzer-model-notice-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="16" x2="12" y2="12" />
+                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                  </svg>
                 </div>
-                {showScoringDetails && (
-                  <div style={{ marginTop: '8px', lineHeight: 1.5, borderTop: '1px solid var(--border-subtle)', paddingTop: '6px' }}>
-                    Calculated as: <code>Risk Score = min(100, &sum; Severity Weights)</code> where:
-                    <br />&bull; <strong>Critical Hazard:</strong> 40 pts &nbsp;&bull; <strong>High:</strong> 25 pts &nbsp;&bull; <strong>Medium:</strong> 12 pts &nbsp;&bull; <strong>Low:</strong> 5 pts.
-                    <br />Tiers: <strong>75–100:</strong> Critical Risk | <strong>50–74:</strong> High Risk | <strong>25–49:</strong> Medium Risk | <strong>0–24:</strong> Low/Nominal.
+                <div className="analyzer-model-notice-content">
+                  <span className="analyzer-model-notice-title">YOLOv8 COCO-80 Model Scope Notice:</span>
+                  <span className="analyzer-model-notice-body">
+                    The current pretrained YOLOv8 COCO-80 model detects general everyday objects and confirms physical presence. It <strong>cannot</strong> verify hard hats, reflective safety vests, fall protection harnesses, or structural safety. Physical inspection by a certified safety officer is required.
+                  </span>
+                </div>
+              </div>
+
+              {/* 3. Recommended Safety Checks (Max 3-5 concise action cards) */}
+              <div className="safety-checks-section">
+                <div className="safety-checks-header-row">
+                  <div className="safety-checks-title-group">
+                    <span className="safety-checks-heading">
+                      Recommended Safety Checks
+                      <span className="analyzer-meta-chip" style={{ fontSize: '10px' }}>
+                        {recommendedSafetyChecks.length} Recommended
+                      </span>
+                    </span>
+                    <span className="safety-checks-subheading">
+                      Concise action items derived from detected personnel and scene elements (Max 3–5 items)
+                    </span>
                   </div>
-                )}
-              </div>
 
-              {/* Overview Summary */}
-              {analysisResults.summary && (
-                <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.5, background: 'rgba(255, 255, 255, 0.02)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
-                  <strong style={{ color: '#ffffff' }}>
-                    {analysisResults.mode === 'yolo' ? 'YOLO Inference Summary:' : 'AI Summary:'}
-                  </strong>{' '}
-                  {analysisResults.summary}
-                </div>
-              )}
-
-              {/* Model Scope & Transparency Disclaimer */}
-              {analysisResults.modelDisclaimer && (
-                <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.4, background: 'rgba(56, 189, 248, 0.04)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(56, 189, 248, 0.15)' }}>
-                  ℹ️ <strong>Model Scope:</strong> {analysisResults.modelDisclaimer}
-                </div>
-              )}
-
-              {/* Detected Hazards List */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', letterSpacing: '0.5px' }}>
-                    DETECTED HAZARD VECTORS ({analysisResults.hazards.length}):
-                  </span>
-                  {analysisResults.hazards.length > 1 && (
+                  {recommendedSafetyChecks.length > 0 && (
                     <button
                       type="button"
-                      className="table-action-cyber-btn"
-                      onClick={handleRegisterAll}
+                      className="view-hero-btn"
+                      onClick={() => setShowRegisterModal(true)}
+                      disabled={registrableCount === 0 || selectedFindingIds.size === 0}
+                      style={{ padding: '7px 14px', fontSize: '12px' }}
                     >
-                      Register All to Registry &rarr;
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                      Review and Register Hazards ({selectedFindingIds.size})
                     </button>
                   )}
                 </div>
 
-                {analysisResults.hazards.length === 0 ? (
+                {/* Selection Toolbar */}
+                {recommendedSafetyChecks.length > 0 && registrableCount > 0 && (
+                  <div className="safety-checks-toolbar">
+                    <label className="custom-checkbox-label">
+                      <input
+                        type="checkbox"
+                        className="custom-checkbox-input"
+                        checked={selectedFindingIds.size > 0 && selectedFindingIds.size === registrableCount}
+                        onChange={toggleSelectAll}
+                      />
+                      <span>Select all findings for registration ({selectedFindingIds.size}/{registrableCount} selected)</span>
+                    </label>
+                    <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                      Target site: <strong style={{ color: '#ffffff' }}>{site}</strong>
+                    </span>
+                  </div>
+                )}
+
+                {/* Safety Check Cards List */}
+                {recommendedSafetyChecks.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '24px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid var(--color-low)', borderRadius: '8px', color: '#6ee7b7', fontSize: '12.5px' }}>
-                    ✓ <strong>No Visible Safety Infractions Flagged:</strong> The scanned scene exhibits compliant PPE, anchored scaffolding edges, and clear transit zones matching OSHA 1926 standards.
+                    ✓ <strong>Nominal Jobsite Baseline:</strong> No immediate safety checks or risk vectors flagged in this photo.
                   </div>
                 ) : (
-                  analysisResults.hazards.map((hazard) => {
-                    const isRegistered = registeredIds.has(hazard.id)
-                    const sevClass = (hazard.severity || 'medium').toLowerCase()
+                  recommendedSafetyChecks.map((card) => {
+                    const isAllRegistered = card.rawHazards && card.rawHazards.length > 0
+                      ? card.rawHazards.every(h => registeredIds.has(h.id))
+                      : registeredIds.has(card.id)
+                    const isSelected = selectedFindingIds.has(card.id)
+                    const sevClass = card.isOrdinaryObject ? 'contextual' : (card.severity || 'low').toLowerCase()
+
                     return (
-                      <div key={hazard.id} className={`detected-hazard-card ${sevClass}`}>
-                        <div className="detected-hazard-header">
-                          <div>
-                            <div className="detected-hazard-title">
-                              {hazard.name}
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '3px' }}>
-                              <span className="detected-hazard-loc">
-                                📍 {hazard.location || 'Visual field'}
-                              </span>
-                              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>&bull; Category: {hazard.category || 'General'}</span>
-                            </div>
+                      <div key={card.id} className={`safety-check-card ${sevClass}`}>
+                        <div className="safety-check-card-header">
+                          <div className="safety-check-card-title-wrap">
+                            {!isAllRegistered ? (
+                              <input
+                                type="checkbox"
+                                className="custom-checkbox-input"
+                                checked={isSelected}
+                                onChange={() => toggleFindingSelection(card.id)}
+                                title="Select to register as hazard"
+                                aria-label={`Select ${card.title}`}
+                              />
+                            ) : (
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-primary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            )}
+                            <div className="safety-check-card-title">{card.title}</div>
                           </div>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <span className={`cyber-badge ${sevClass}`}>
-                              {hazard.severity}
-                            </span>
-                            {hazard.confidence !== null && hazard.confidence !== undefined ? (
-                              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--cyan-primary)' }}>
-                                {(hazard.confidence * 100).toFixed(0)}% Conf
+                            {card.isOrdinaryObject ? (
+                              <span className="cyber-badge" style={{ background: 'rgba(56, 189, 248, 0.12)', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
+                                Contextual Object
                               </span>
                             ) : (
-                              <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)' }}>
-                                N/A (Demo Mode)
+                              <span className={`cyber-badge ${sevClass}`}>
+                                {card.severity}
+                              </span>
+                            )}
+                            {isAllRegistered && (
+                              <span style={{ fontSize: '11px', color: 'var(--emerald-light)', fontWeight: 600 }}>
+                                ✓ Registered
                               </span>
                             )}
                           </div>
                         </div>
 
-                        <div className="detected-hazard-body">
-                          {hazard.explanation}
+                        <div className="safety-check-card-expl">
+                          {card.explanation}
                         </div>
 
-                        {hazard.recommendation && (
-                          <div className="detected-hazard-rec">
-                            <strong style={{ color: 'var(--cyan-primary)' }}>Recommended Corrective Action:</strong> {hazard.recommendation}
+                        {card.action && (
+                          <div className="safety-check-card-action">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+                              <polyline points="9 11 12 14 22 4" />
+                              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                            </svg>
+                            <div>
+                              <strong>Next Action:</strong> {card.action}
+                            </div>
                           </div>
                         )}
 
-                        <div className="detected-hazard-actions">
-                          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                            Site: <strong>{site}</strong>
-                          </span>
-                          <button
-                            type="button"
-                            className="table-action-cyber-btn"
-                            disabled={isRegistered}
-                            onClick={() => handleRegisterDetectedHazard(hazard)}
-                            style={{
-                              background: isRegistered ? 'rgba(16, 185, 129, 0.15)' : undefined,
-                              borderColor: isRegistered ? 'var(--color-low)' : undefined,
-                              color: isRegistered ? 'var(--color-low)' : undefined
-                            }}
-                          >
-                            {isRegistered ? '✓ Registered in Hazard Registry' : '+ Register as Verified Hazard'}
-                          </button>
+                        <div className="safety-check-card-footer">
+                          <span>Category: <strong>{card.category}</strong></span>
+                          <span>Site: <strong>{site}</strong></span>
                         </div>
                       </div>
                     )
                   })
+                )}
+              </div>
+
+              {/* 4. Collapsible Technical Details Section */}
+              <div className="analyzer-tech-details-container">
+                <button
+                  type="button"
+                  className="analyzer-tech-toggle-btn"
+                  onClick={() => setShowTechDetails(!showTechDetails)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="16 18 22 12 16 6" />
+                      <polyline points="8 6 2 12 8 18" />
+                    </svg>
+                    <span style={{ fontWeight: 600 }}>Technical Details &amp; Computer Vision Diagnostics</span>
+                  </div>
+                  <span style={{ fontSize: '12px', color: 'var(--cyan-primary)' }}>
+                    {showTechDetails ? '▲ Hide Technical Details' : '▼ View Technical Details'}
+                  </span>
+                </button>
+
+                {showTechDetails && (
+                  <div className="analyzer-tech-content">
+                    <div className="analyzer-tech-grid">
+                      <div className="tech-metric-card">
+                        <span className="tech-metric-label">Inference Engine</span>
+                        <span className="tech-metric-val">{analysisResults.provider || (analysisResults.mode === 'yolo' ? 'YOLOv8n (Local)' : 'Demo Engine')}</span>
+                      </div>
+                      <div className="tech-metric-card">
+                        <span className="tech-metric-label">Inference Latency</span>
+                        <span className="tech-metric-val">{analysisResults.inferenceTimeMs ? `${analysisResults.inferenceTimeMs} ms` : '45 ms (Est.)'}</span>
+                      </div>
+                      <div className="tech-metric-card">
+                        <span className="tech-metric-label">Confidence Cutoff</span>
+                        <span className="tech-metric-val">0.25 (25% Threshold)</span>
+                      </div>
+                      <div className="tech-metric-card">
+                        <span className="tech-metric-label">Total Detections</span>
+                        <span className="tech-metric-val">{analysisResults.detectionsCount ?? hazardsList.length}</span>
+                      </div>
+                    </div>
+
+                    {/* Raw Detections & Bounding Boxes Table */}
+                    <div style={{ marginTop: '4px' }}>
+                      <div style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', marginBottom: '6px' }}>
+                        RAW DETECTIONS &amp; BOUNDING BOX COORDINATES:
+                      </div>
+                      {hazardsList.length === 0 ? (
+                        <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>No object bounding boxes recorded.</div>
+                      ) : (
+                        <div className="table-wrapper" style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                          <table className="enterprise-table" style={{ fontSize: '11.5px' }}>
+                            <thead>
+                              <tr>
+                                <th>Object Class</th>
+                                <th>Confidence</th>
+                                <th>Bounding Box [x1, y1, x2, y2]</th>
+                                <th>Sector Location</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {hazardsList.map((h, i) => (
+                                <tr key={h.id || i}>
+                                  <td><code>{h.className || h.name}</code></td>
+                                  <td>
+                                    {h.confidence !== null && h.confidence !== undefined
+                                      ? `${(h.confidence * 100).toFixed(1)}%`
+                                      : 'N/A (Demo)'}
+                                  </td>
+                                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '10.5px' }}>
+                                    {h.bbox && Array.isArray(h.bbox) ? `[${h.bbox.join(', ')}]` : 'N/A'}
+                                  </td>
+                                  <td>{h.location || 'Visual field'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Scoring Methodology Breakdown */}
+                    <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', lineHeight: 1.5 }}>
+                      <strong>Scoring Methodology:</strong> Weighted Risk Score calculated as <code>min(100, &sum; Severity Weights)</code> where Critical = 40 pts, High = 25 pts, Medium = 12 pts, Low = 5 pts.
+                      <div style={{ marginTop: '4px' }}>
+                        <strong>Risk Classification Bands:</strong> 0–29% Low &bull; 30–59% Medium &bull; 60–79% High &bull; 80–100% Very High (Configurable decision-support heuristics; not official OSHA standards).
+                      </div>
+                      {analysisResults.summary && (
+                        <div style={{ marginTop: '4px' }}>
+                          <strong>Raw Model Output:</strong> {analysisResults.summary}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
 
@@ -4142,6 +4715,78 @@ Respond strictly with valid JSON without markdown fences matching:
           )}
         </div>
       </div>
+
+      {/* Review & Batch Register Hazards Confirmation Modal */}
+      {showRegisterModal && (
+        <div className="kpi-modal-overlay" onClick={() => setShowRegisterModal(false)} role="dialog" aria-modal="true">
+          <div className="kpi-modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '580px' }}>
+            <div className="kpi-modal-header">
+              <div className="kpi-modal-title-row">
+                <div className="kpi-modal-title">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-primary)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 11 12 14 22 4" />
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                  </svg>
+                  Review and Register Hazards
+                </div>
+                <div className="kpi-modal-sub">
+                  Confirm selected findings before saving to SITEGUARD AI registry for <strong>{site}</strong>
+                </div>
+              </div>
+              <button type="button" className="kpi-modal-close-btn" onClick={() => setShowRegisterModal(false)} aria-label="Close dialog">&times;</button>
+            </div>
+
+            <div className="kpi-modal-body">
+              <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginBottom: '14px', lineHeight: 1.5 }}>
+                You have selected <strong>{selectedFindingIds.size}</strong> safety finding(s) to register into the central hazard registry. Each entry creates an active incident record and initiates automated alert triage.
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '240px', overflowY: 'auto', paddingRight: '4px' }}>
+                {recommendedSafetyChecks.filter(c => selectedFindingIds.has(c.id)).map(card => {
+                  const sevClass = card.isOrdinaryObject ? 'contextual' : (card.severity || 'low').toLowerCase()
+                  return (
+                    <div key={card.id} style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '10px 12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: '#ffffff' }}>{card.title}</span>
+                        <span className={`cyber-badge ${sevClass}`}>{card.severity}</span>
+                      </div>
+                      <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                        {card.explanation}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#6ee7b7' }}>
+                        <strong>Action:</strong> {card.action}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div style={{ marginTop: '16px', padding: '10px 12px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid var(--emerald-dim)', borderRadius: '6px', fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+                ℹ️ <strong>Target Site:</strong> {site}. Verified hazards are saved to SQLite and synchronized across all active project tables and alerts.
+              </div>
+            </div>
+
+            <div className="kpi-modal-footer">
+              <button
+                type="button"
+                className="table-action-cyber-btn"
+                onClick={() => setShowRegisterModal(false)}
+                disabled={isRegistering}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="view-hero-btn"
+                onClick={handleConfirmBatchRegister}
+                disabled={isRegistering || selectedFindingIds.size === 0}
+              >
+                {isRegistering ? 'Registering Hazards...' : `Confirm & Register (${selectedFindingIds.size}) Hazards`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Gemini API Key Configuration Modal */}
       {showKeyModal && (
@@ -5145,158 +5790,314 @@ function ReportsView({ reports, onAddReport, selectedSite, hazards = [], alerts 
 }
 
 // ============================================================================
-// Sub-View: 7. Alerts Triage Dedicated View
+// Sub-View: 7. Safety Alerts Dedicated View
 // ============================================================================
-function AlertsCenterView({ alerts, onDismissAlert, onAcknowledgeAlert, onClearAll, onShowToast }) {
-  const [alertFilter, setAlertFilter] = useState('All')
+function AlertsCenterView({ alerts = [], onDismissAlert, onAcknowledgeAlert, onAcknowledgeAll, onShowToast }) {
+  const [filter, setFilter] = useState('All') // 'All' | 'Active' | 'Acknowledged'
+  const [showBulkConfirmModal, setShowBulkConfirmModal] = useState(false)
 
-  const filteredAlerts = alertFilter === 'All'
-    ? alerts
-    : alerts.filter(a => a.type.toLowerCase() === alertFilter.toLowerCase())
+  // Real computed summary counts from actual backend alerts array
+  const activeAlerts = alerts.filter(a => (a.status || 'Active').toLowerCase() === 'active')
+  const criticalAlerts = alerts.filter(a => {
+    const isCritical = (a.type || '').toLowerCase() === 'critical' || (a.severity || '').toLowerCase() === 'critical'
+    const isActive = (a.status || 'Active').toLowerCase() === 'active'
+    return isCritical && isActive
+  })
+
+  // Grounded count of alerts resolved or dismissed today
+  const isToday = (dateStr) => {
+    if (!dateStr) return false
+    try {
+      const d = new Date(dateStr)
+      if (isNaN(d.getTime())) return false
+      const now = new Date()
+      return d.getDate() === now.getDate() &&
+             d.getMonth() === now.getMonth() &&
+             d.getFullYear() === now.getFullYear()
+    } catch (_) {
+      return false
+    }
+  }
+
+  const resolvedTodayAlerts = alerts.filter(a => {
+    const s = (a.status || '').toLowerCase()
+    if (s !== 'resolved' && s !== 'dismissed') return false
+    if (a.updatedAt || a.createdAt) {
+      return isToday(a.updatedAt || a.createdAt)
+    }
+    return true
+  })
+
+  const acknowledgedAlerts = alerts.filter(a => (a.status || '').toLowerCase() === 'acknowledged')
+
+  // Filter alerts by user selection
+  const filteredAlerts = alerts.filter(a => {
+    const status = (a.status || 'Active').toLowerCase()
+    if (filter === 'Active') return status === 'active'
+    if (filter === 'Acknowledged') return status === 'acknowledged'
+    return true // 'All'
+  })
+
+  // Format real timestamp from backend if present (no invented dates)
+  const formatTime = (alt) => {
+    if (alt.createdAt) {
+      try {
+        const d = new Date(alt.createdAt)
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' at ' +
+                 d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true })
+        }
+      } catch (_) {}
+    }
+    if (alt.time && typeof alt.time === 'string' && alt.time.trim() && alt.time !== 'Just now') {
+      return alt.time
+    }
+    if (alt.time === 'Just now') {
+      return 'Just now'
+    }
+    return null
+  }
+
+  // Normalize severity to Critical, High, Medium, or Low
+  const getSeverityInfo = (typeOrSeverity) => {
+    const raw = String(typeOrSeverity || '').toLowerCase()
+    if (raw === 'critical') return { label: 'Critical', cssClass: 'critical' }
+    if (raw === 'high') return { label: 'High', cssClass: 'high' }
+    if (raw === 'medium') return { label: 'Medium', cssClass: 'medium' }
+    return { label: 'Low', cssClass: 'low' }
+  }
+
+  const handleConfirmBulkAcknowledge = () => {
+    setShowBulkConfirmModal(false)
+    if (typeof onAcknowledgeAll === 'function') {
+      onAcknowledgeAll()
+    } else {
+      activeAlerts.forEach(a => onAcknowledgeAlert && onAcknowledgeAlert(a.id))
+      onShowToast && onShowToast('All active alerts marked as acknowledged.')
+    }
+  }
 
   return (
     <div className="view-module-container animate-entrance">
-      <div className="view-hero-panel">
-        <div>
-          <div className="view-hero-title">Incident Triage &amp; Escalation Center</div>
-          <div className="view-hero-desc">
-            Real-time feed of flagged sensor breaches, drone observations, and supervisor notifications.
-          </div>
+      {/* Page Header */}
+      <div className="safety-alerts-hero">
+        <div className="safety-alerts-hero-text">
+          <h1 className="safety-alerts-hero-title">Safety Alerts</h1>
+          <p className="safety-alerts-hero-subtitle">Review safety issues and take action.</p>
         </div>
-        <button
-          type="button"
-          className="view-hero-btn"
-          onClick={onClearAll}
-          disabled={alerts.length === 0}
-        >
-          Acknowledge &amp; Clear All Alerts
-        </button>
+        {activeAlerts.length > 0 && (
+          <button
+            type="button"
+            className="safety-alerts-bulk-btn"
+            onClick={() => setShowBulkConfirmModal(true)}
+            title="Acknowledge all currently active alerts"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span>Acknowledge All Active ({activeAlerts.length})</span>
+          </button>
+        )}
       </div>
 
-      {/* Alert Stats */}
-      <div className="view-stats-row">
-        <div className="view-stat-card">
-          <span className="view-stat-label">Active Triage Alerts</span>
-          <span className="view-stat-value" style={{ color: alerts.length > 0 ? 'var(--color-critical)' : 'var(--color-low)' }}>
-            {alerts.length} ALERTS
+      {/* Three Summary Cards */}
+      <div className="safety-summary-grid">
+        <div className="safety-summary-card">
+          <span className="safety-summary-label">Active Alerts</span>
+          <span className="safety-summary-value" style={{ color: activeAlerts.length > 0 ? 'var(--color-high)' : 'var(--color-low)' }}>
+            {activeAlerts.length}
           </span>
-          <span className="view-stat-sub">Real-Time Sensor Queue</span>
+          <span className="safety-summary-note">Alerts requiring attention</span>
         </div>
-        <div className="view-stat-card">
-          <span className="view-stat-label">Critical Escalations</span>
-          <span className="view-stat-value" style={{ color: 'var(--color-critical)' }}>
-            {alerts.filter(a => a.type === 'critical').length} ACTIVE
+
+        <div className="safety-summary-card">
+          <span className="safety-summary-label">Critical Alerts</span>
+          <span className="safety-summary-value" style={{ color: criticalAlerts.length > 0 ? 'var(--color-critical)' : 'var(--color-low)' }}>
+            {criticalAlerts.length}
           </span>
-          <span className="view-stat-sub">Automated Dispatch Triggered</span>
+          <span className="safety-summary-note">Urgent safety issues</span>
         </div>
-        <div className="view-stat-card">
-          <span className="view-stat-label">High Priority Flags</span>
-          <span className="view-stat-value" style={{ color: 'var(--color-high)' }}>
-            {alerts.filter(a => a.type === 'high').length} ACTIVE
+
+        <div className="safety-summary-card">
+          <span className="safety-summary-label">Resolved Today</span>
+          <span className="safety-summary-value" style={{ color: 'var(--color-low)' }}>
+            {resolvedTodayAlerts.length}
           </span>
-          <span className="view-stat-sub">Field Supervisor Review</span>
-        </div>
-        <div className="view-stat-card">
-          <span className="view-stat-label">Auto-Resolved Today</span>
-          <span className="view-stat-value" style={{ color: 'var(--color-low)' }}>18 INCIDENTS</span>
-          <span className="view-stat-sub">Sensor Anomaly Cleared</span>
+          <span className="safety-summary-note">Issues resolved or cleared</span>
         </div>
       </div>
 
       {/* Filter Tabs */}
-      <div className="table-filter-header">
-        <div className="cyber-pill-group">
-          {['All', 'Critical', 'High', 'Medium', 'Info'].map((sev) => (
-            <button
-              key={sev}
-              type="button"
-              className={`cyber-pill-btn ${alertFilter === sev ? 'active' : ''}`}
-              onClick={() => setAlertFilter(sev)}
-            >
-              {sev === 'All' ? `All Alerts (${alerts.length})` : sev}
-            </button>
-          ))}
+      <div className="safety-filter-row">
+        <div className="safety-filter-pill-group">
+          <button
+            type="button"
+            className={`safety-filter-pill ${filter === 'All' ? 'active' : ''}`}
+            onClick={() => setFilter('All')}
+          >
+            All ({alerts.length})
+          </button>
+          <button
+            type="button"
+            className={`safety-filter-pill ${filter === 'Active' ? 'active' : ''}`}
+            onClick={() => setFilter('Active')}
+          >
+            Active ({activeAlerts.length})
+          </button>
+          <button
+            type="button"
+            className={`safety-filter-pill ${filter === 'Acknowledged' ? 'active' : ''}`}
+            onClick={() => setFilter('Acknowledged')}
+          >
+            Acknowledged ({acknowledgedAlerts.length})
+          </button>
         </div>
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-          AUTOMATED TRIAGE QUEUE // DEMO FEED
-        </span>
       </div>
 
-      {/* Alerts Timeline List */}
-      <div className="cyber-panel">
-        <div className="alert-timeline-list">
-          {filteredAlerts.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '36px', color: 'var(--text-dim)' }}>
-              No incidents currently flagged in this triage tier. Telemetry optimal.
+      {/* Alert Cards List */}
+      <div className="safety-alerts-list">
+        {filteredAlerts.length === 0 ? (
+          <div className="safety-alerts-empty-state">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-primary)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+              <polyline points="22 4 12 14.01 9 11.01" />
+            </svg>
+            <div className="safety-alerts-empty-title">No alerts found</div>
+            <div className="safety-alerts-empty-desc">
+              {filter === 'Active'
+                ? 'All clear! There are no active safety issues right now.'
+                : filter === 'Acknowledged'
+                ? 'No alerts have been acknowledged yet.'
+                : 'No safety alerts are currently on record.'}
             </div>
-          ) : (
-            filteredAlerts.map((alt) => (
-              <div key={alt.id} className="timeline-entry">
-                <div className={`timeline-icon-col ${alt.type}`}>
-                  {renderAlertIcon(alt.type)}
-                </div>
-                <div className="timeline-content-col">
-                  <div className="timeline-title-row">
-                    <span className="timeline-title">{alt.title}</span>
-                    <span className="timeline-time">{alt.time}</span>
-                  </div>
-                  <div className="timeline-desc">{alt.desc}</div>
-                  <div className="timeline-footer">
-                    <div className="timeline-meta-left">
-                      <span className="timeline-site">{alt.site}</span>
-                      <span className={`alert-status-badge ${alt.status?.toLowerCase() || 'active'}`}>
-                        {alt.status || 'Active'}
+          </div>
+        ) : (
+          filteredAlerts.map((alt) => {
+            const sev = getSeverityInfo(alt.severity || alt.type)
+            const isAck = (alt.status || '').toLowerCase() === 'acknowledged'
+            const timeText = formatTime(alt)
+
+            return (
+              <div key={alt.id} className={`safety-alert-card ${sev.cssClass} ${isAck ? 'is-ack' : ''}`}>
+                <div className="safety-alert-card-header">
+                  <div className="safety-alert-title-wrap">
+                    <span className={`safety-alert-severity-badge ${sev.cssClass}`}>
+                      {sev.label}
+                    </span>
+                    <h3 className="safety-alert-title">{alt.title}</h3>
+                    {isAck && (
+                      <span className="safety-alert-ack-pill">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        Acknowledged
                       </span>
-                      {alt.hazardId && (
-                        <span className="alert-hazard-sync-pill">
-                          <span className="badge-dot" />
-                          SYNCED HAZARD: {alt.hazardId}
-                        </span>
-                      )}
-                      {alt.riskScore && (
-                        <span style={{ fontSize: '11px', color: 'var(--cyan-primary)', fontFamily: 'var(--font-mono)' }}>
-                          SCORE: {alt.riskScore}/100
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button
-                        type="button"
-                        className={`table-action-cyber-btn ${alt.status === 'Acknowledged' ? 'is-ack' : ''}`}
-                        onClick={() => {
-                          onAcknowledgeAlert(alt.id)
-                        }}
-                        title="Acknowledge this alert"
-                      >
-                        {alt.status === 'Acknowledged' ? '✓ Acknowledged' : 'Acknowledge'}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-action-cyber-btn"
-                        onClick={() => {
-                          onShowToast(`Simulated SMS escalation dispatched for ${alt.title}`)
-                        }}
-                      >
-                        Escalate Super
-                      </button>
-                      <button
-                        type="button"
-                        className="table-action-cyber-btn"
-                        onClick={() => {
-                          onDismissAlert(alt.id)
-                          onShowToast(`Alert ${alt.id} resolved and archived.`)
-                        }}
-                      >
-                        Resolve Alert
-                      </button>
-                    </div>
+                    )}
                   </div>
+
+                  <div className="safety-alert-meta-top">
+                    {alt.site && (
+                      <span className="safety-alert-site-pill" title="Construction site">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                          <circle cx="12" cy="10" r="3" />
+                        </svg>
+                        {alt.site}
+                      </span>
+                    )}
+                    {timeText && (
+                      <span className="safety-alert-time-pill" title="Alert time">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        {timeText}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="safety-alert-desc">
+                  {alt.desc || 'No detailed description provided for this safety issue.'}
+                </div>
+
+                <div className="safety-alert-card-footer">
+                  <div className="safety-alert-footer-info">
+                    {alt.hazardId && (
+                      <span className="safety-alert-ref">
+                        Hazard ID: {alt.hazardId}
+                      </span>
+                    )}
+                    <span className="safety-alert-status-info">
+                      Status: <strong>{alt.status || 'Active'}</strong>
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className={`safety-alert-action-btn ${isAck ? 'is-ack' : ''}`}
+                    onClick={() => onAcknowledgeAlert && onAcknowledgeAlert(alt.id)}
+                    title={isAck ? 'Click to mark as active again' : 'Acknowledge this safety alert'}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    <span>{isAck ? 'Acknowledged' : 'Acknowledge'}</span>
+                  </button>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+            )
+          })
+        )}
       </div>
+
+      {/* Confirmation Dialog for Bulk Action */}
+      {showBulkConfirmModal && typeof document !== 'undefined' && createPortal(
+        <div className="kpi-modal-overlay" onClick={() => setShowBulkConfirmModal(false)} role="dialog" aria-modal="true">
+          <div className="kpi-modal-dialog" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="kpi-modal-header">
+              <div>
+                <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#ffffff', margin: 0 }}>
+                  Confirm Acknowledge All Alerts
+                </h3>
+                <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', margin: 0 }}>
+                  Bulk action confirmation
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBulkConfirmModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '20px', cursor: 'pointer', lineHeight: 1 }}
+                aria-label="Close"
+              >
+                &times;
+              </button>
+            </div>
+            <div style={{ padding: '20px', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              Are you sure you want to acknowledge all <strong>{activeAlerts.length}</strong> active alerts?
+              <br /><br />
+              This will update their status to <strong>Acknowledged</strong> for site supervisors. Acknowledging alerts will not delete or resolve any incident or hazard records.
+            </div>
+            <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: '10px', background: 'rgba(11, 17, 32, 0.4)' }}>
+              <button
+                type="button"
+                className="kpi-modal-btn secondary"
+                onClick={() => setShowBulkConfirmModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="kpi-modal-btn primary"
+                onClick={handleConfirmBulkAcknowledge}
+              >
+                Yes, Acknowledge All
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }
@@ -6031,7 +6832,7 @@ function KpiDetailModal({
                   onClose()
                 }}
               >
-                Open Incident Triage Queue &rarr;
+                Open Safety Alerts &rarr;
               </button>
             </div>
           </>
