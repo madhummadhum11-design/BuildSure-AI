@@ -4,9 +4,22 @@
  * Base URL: http://127.0.0.1:8000/api
  */
 
-export const API_BASE_URL = (
+const rawApiUrl = (
   typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL
-) ? import.meta.env.VITE_API_URL : 'http://127.0.0.1:8000/api'
+) ? String(import.meta.env.VITE_API_URL).trim() : 'http://127.0.0.1:8000/api'
+
+/**
+ * Normalizes backend API URL by trimming trailing slashes and ensuring the /api path is present.
+ */
+function normalizeApiBaseUrl(url) {
+  let cleaned = (url || '').replace(/\/+$/, '')
+  if (cleaned && !cleaned.endsWith('/api')) {
+    cleaned = `${cleaned}/api`
+  }
+  return cleaned || 'http://127.0.0.1:8000/api'
+}
+
+export const API_BASE_URL = normalizeApiBaseUrl(rawApiUrl)
 
 export const TOKEN_STORAGE_KEY = 'siteguard_auth_token'
 

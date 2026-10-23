@@ -12,6 +12,7 @@ import {
 } from './utils/exportUtils'
 import PublicLandingPage from './components/PublicLandingPage'
 import {
+  API_BASE_URL,
   checkBackendHealth,
   fetchHazards,
   createHazard,
@@ -1145,7 +1146,7 @@ function App() {
               }}
               title={
                 apiStatus === 'connected'
-                  ? 'FastAPI Backend connected (http://127.0.0.1:8000)'
+                  ? `FastAPI Backend connected (${API_BASE_URL})`
                   : apiStatus === 'checking'
                   ? 'Checking backend connection...'
                   : 'Backend unavailable. Operating in Local Storage fallback mode.'

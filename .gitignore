@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 .venv/
@@ -10,6 +10,8 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.production
+!frontend/.env.production
 
 # Local databases
 *.db
