@@ -1,55 +1,80 @@
 /* ==========================================================================
-   SITEGUARD AI - Futuristic AI Command Center Global Reset & Theme
+   SITEGUARD AI - Enterprise Construction Risk Intelligence Platform
+   Global Design System Tokens & Base Reset
    ========================================================================== */
 
 :root {
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 
-  /* Deep Midnight & Charcoal Command Center Palette */
-  --bg-deep: #050811;
-  --bg-surface: #0a0f1d;
-  --bg-card: rgba(13, 20, 38, 0.75);
-  --bg-card-hover: rgba(18, 28, 54, 0.85);
-  --bg-panel: rgba(10, 16, 32, 0.85);
-  --bg-subtle: rgba(255, 255, 255, 0.03);
+  /* Enterprise Deep Navy & Slate Surface Palette */
+  --bg-deep: #080d1a;          /* Deepest navy background */
+  --bg-surface: #0f172a;       /* Slate 900 surface */
+  --bg-surface-elevated: #152238; /* Elevated panel surface */
+  --bg-card: rgba(15, 23, 42, 0.88);
+  --bg-card-hover: rgba(30, 41, 59, 0.95);
+  --bg-panel: rgba(15, 23, 42, 0.92);
+  --bg-subtle: rgba(255, 255, 255, 0.035);
+  --bg-subtle-hover: rgba(255, 255, 255, 0.065);
 
-  /* Thin Cyber Borders */
-  --border-subtle: rgba(56, 189, 248, 0.1);
-  --border-medium: rgba(56, 189, 248, 0.22);
-  --border-glow: rgba(0, 242, 254, 0.4);
-  --border-glass: rgba(255, 255, 255, 0.08);
+  /* Refined, Non-Glowing Slate Borders */
+  --border-subtle: rgba(148, 163, 184, 0.12);
+  --border-medium: rgba(148, 163, 184, 0.20);
+  --border-focus: #10b981;
+  --border-glass: rgba(255, 255, 255, 0.07);
+  --border-glow: rgba(16, 185, 129, 0.25);
 
-  /* Electric Cyan, Blue & Cyber Violet Accents */
-  --cyan-primary: #00f2fe;
-  --cyan-bright: #38bdf8;
-  --cyan-muted: #0284c7;
-  --cyan-glow: 0 0 20px rgba(0, 242, 254, 0.28);
-  --blue-accent: #2563eb;
-  --violet-accent: #8b5cf6;
-  --violet-glow: 0 0 20px rgba(139, 92, 246, 0.25);
+  /* Restrained Emerald-Green Primary Accents */
+  --emerald-primary: #10b981;
+  --emerald-hover: #059669;
+  --emerald-light: #34d399;
+  --emerald-subtle: rgba(16, 185, 129, 0.12);
+  --emerald-border: rgba(16, 185, 129, 0.32);
 
-  /* Tactical Status Alert Colors */
-  --color-critical: #ff3366;
-  --color-critical-glow: 0 0 16px rgba(255, 51, 102, 0.35);
-  --color-high: #ff8c00;
-  --color-high-glow: 0 0 16px rgba(255, 140, 0, 0.3);
-  --color-medium: #eab308;
-  --color-medium-glow: 0 0 16px rgba(234, 179, 8, 0.25);
-  --color-low: #10b981;
-  --color-low-glow: 0 0 16px rgba(16, 185, 129, 0.25);
+  /* Aliased for full backwards compatibility across all views */
+  --cyan-primary: #10b981;
+  --cyan-bright: #34d399;
+  --cyan-muted: #059669;
+  --cyan-glow: none;
+  --blue-accent: #3b82f6;
+  --violet-accent: #6366f1;
+  --violet-glow: none;
+
+  /* Professional Enterprise Status Alert Colors */
+  --color-critical: #ef4444;       /* Crisp red 500 */
+  --color-critical-bg: rgba(239, 68, 68, 0.12);
+  --color-critical-border: rgba(239, 68, 68, 0.32);
+  --color-critical-glow: none;
+
+  --color-high: #f59e0b;           /* Amber 500 */
+  --color-high-bg: rgba(245, 158, 11, 0.12);
+  --color-high-border: rgba(245, 158, 11, 0.32);
+  --color-high-glow: none;
+
+  --color-medium: #3b82f6;         /* Corporate blue 500 */
+  --color-medium-bg: rgba(59, 130, 246, 0.12);
+  --color-medium-border: rgba(59, 130, 246, 0.32);
+  --color-medium-glow: none;
+
+  --color-low: #10b981;            /* Emerald 500 */
+  --color-low-bg: rgba(16, 185, 129, 0.12);
+  --color-low-border: rgba(16, 185, 129, 0.32);
+  --color-low-glow: none;
 
   /* Typography Colors */
   --text-pure: #ffffff;
-  --text-primary: #f1f5f9;
-  --text-muted: #94a3b8;
-  --text-dim: #64748b;
-  --text-cyan: #38bdf8;
+  --text-primary: #f8fafc;         /* Slate 50 */
+  --text-secondary: #cbd5e1;       /* Slate 300 */
+  --text-muted: #94a3b8;           /* Slate 400 */
+  --text-dim: #64748b;             /* Slate 500 */
+  --text-cyan: #34d399;
 
-  /* Elevation Shadows */
-  --shadow-command: 0 8px 32px 0 rgba(0, 0, 0, 0.65);
-  --shadow-card: 0 4px 20px 0 rgba(0, 0, 0, 0.45);
-  --shadow-cyan-sm: 0 0 12px rgba(0, 242, 254, 0.2);
+  /* Soft, Natural Enterprise Elevation Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 4px 14px -1px rgba(0, 0, 0, 0.4), 0 2px 6px -2px rgba(0, 0, 0, 0.3);
+  --shadow-command: 0 12px 36px -4px rgba(0, 0, 0, 0.6);
+  --shadow-dropdown: 0 14px 34px -4px rgba(0, 0, 0, 0.65), 0 6px 12px -3px rgba(0, 0, 0, 0.5);
+  --shadow-cyan-sm: none;
 }
 
 *, *::before, *::after {
@@ -78,26 +103,26 @@ html, body {
   min-height: 100vh;
   display: flex;
   width: 100%;
-  background: radial-gradient(circle at 50% 0%, rgba(14, 27, 59, 0.45) 0%, rgba(5, 8, 17, 1) 75%);
+  background: radial-gradient(circle at 50% 0%, rgba(21, 34, 60, 0.35) 0%, rgba(8, 13, 26, 1) 85%);
 }
 
-/* Custom Scrollbar for Command Center */
+/* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(6, 9, 19, 0.8);
+  background: rgba(8, 13, 26, 0.85);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(56, 189, 248, 0.25);
+  background: rgba(148, 163, 184, 0.22);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 242, 254, 0.5);
+  background: rgba(16, 185, 129, 0.4);
 }
 
 /* Clean Form Resets - Inherit Sans Font Family */
@@ -125,4 +150,3 @@ a {
   color: inherit;
   text-decoration: none;
 }
-

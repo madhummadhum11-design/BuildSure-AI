@@ -1,5 +1,26 @@
-import React, { useState, useRef, useEffect, Fragment } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import './App.css'
+import {
+  downloadJsonFile,
+  exportProjectRiskJson,
+  exportHazardsCsv,
+  generateExecutiveReportPdf,
+  generateActuarialInsurancePdf,
+  sanitizeFilenamePart,
+  getFormattedDateStamp
+} from './utils/exportUtils'
+import {
+  checkBackendHealth,
+  fetchHazards,
+  createHazard,
+  updateHazard,
+  fetchAlerts,
+  createAlert,
+  updateAlert,
+  deleteAlert,
+  analyzePhoto,
+  getVisionStatus
+} from './services/api'
 
 // ============================================================================
 // Sample Telemetry Datasets (Demo Environment)
@@ -18,20 +39,20 @@ const ALL_SITES = [
 // (Deterministic demonstration rules, not validated construction safety standards)
 // ============================================================================
 
-export function calculateRiskScore(severity, likelihood) {
+function calculateRiskScore(severity, likelihood) {
   const sev = Math.min(5, Math.max(1, parseInt(severity, 10) || 1))
   const lik = Math.min(5, Math.max(1, parseInt(likelihood, 10) || 1))
   return sev * lik * 4
 }
 
-export function getPrototypePriority(score) {
+function getPrototypePriority(score) {
   if (score >= 75) return { label: 'Critical', color: 'var(--color-critical)', badgeClass: 'critical' }
   if (score >= 50) return { label: 'High', color: 'var(--color-high)', badgeClass: 'high' }
   if (score >= 25) return { label: 'Medium', color: 'var(--color-medium)', badgeClass: 'medium' }
   return { label: 'Low', color: 'var(--color-low)', badgeClass: 'low' }
 }
 
-export function getCategoryRecommendation(category) {
+function getCategoryRecommendation(category) {
   const normCat = (category || '').toLowerCase().trim()
   if (normCat.includes('fall')) {
     return 'Inspect edges and guardrails; restrict unsafe access.'
@@ -51,7 +72,7 @@ export function getCategoryRecommendation(category) {
   return 'Inspect the reported condition and assign an appropriate corrective action.'
 }
 
-export function getPriorityGuidance(priority) {
+function getPriorityGuidance(priority) {
   const normPri = (priority || '').toLowerCase().trim()
   if (normPri === 'critical') {
     return 'Recommend immediate isolation of the hazard and urgent review by the responsible site safety professional.'
@@ -65,7 +86,7 @@ export function getPriorityGuidance(priority) {
   return 'Recommend routine corrective action and continued monitoring.'
 }
 
-export function getHazardRecommendations(item) {
+function getHazardRecommendations(item) {
   const categoryRec = item.categoryRecommendation || getCategoryRecommendation(item.category || item.hazard)
   const priorityGuide = item.priorityGuidance || getPriorityGuidance(item.priority || item.severity)
   return { categoryRec, priorityGuide }
@@ -259,6 +280,120 @@ const AGENT_DELIBERATIONS = [
   }
 ]
 
+// ============================================================================
+// Default Settings & Reports Baseline Datasets
+// ============================================================================
+const DEFAULT_SETTINGS = {
+  reasoningFreq: 15,
+  consensusThreshold: 85,
+  deepReasoning: true,
+  windThreshold: 40,
+  driftThreshold: 0.04,
+  smsDispatch: true,
+  sirenSimulation: false,
+  dailyDigest: true,
+  simSpeed: '1x'
+}
+
+const INITIAL_REPORTS = [
+  {
+    id: 'rep-1',
+    title: 'Weekly Autonomous Risk Dossier - Week 42',
+    category: 'Weekly Brief',
+    date: 'Oct 14, 2026',
+    size: '2.4 MB PDF',
+    author: 'Sentinel Agent v2.4',
+    status: 'Ready'
+  },
+  {
+    id: 'rep-2',
+    title: 'Crane Wind Load & Structural Stress Analysis',
+    category: 'Structural Audit',
+    date: 'Oct 12, 2026',
+    size: '1.8 MB PDF',
+    author: 'Structural Sentinel Agent',
+    status: 'Ready'
+  },
+  {
+    id: 'rep-3',
+    title: 'OSHA 1926 Bi-Weekly Field Compliance Audit',
+    category: 'Compliance Log',
+    date: 'Oct 10, 2026',
+    size: '3.1 MB PDF',
+    author: 'Compliance Auditor AI',
+    status: 'Ready'
+  },
+  {
+    id: 'rep-4',
+    title: 'Subcontractor Geofence Infraction Investigation',
+    category: 'Incident Investigation',
+    date: 'Oct 08, 2026',
+    size: '1.2 MB PDF',
+    author: 'Vision AI Inspector',
+    status: 'Ready'
+  }
+]
+
+// ============================================================================
+// LocalStorage Persistence Configuration & Safe Serialization Helpers
+// ============================================================================
+const STORAGE_KEYS = {
+  HAZARDS: 'siteguard_hazards',
+  ALERTS: 'siteguard_alerts',
+  AGENT_LOGS: 'siteguard_agent_logs',
+  SETTINGS: 'siteguard_settings',
+  REPORTS: 'siteguard_reports',
+  SWEEP_COUNT: 'siteguard_sweep_count'
+}
+
+function loadFromStorage(key, fallback) {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return fallback
+  }
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw === null || raw === undefined) {
+      return fallback
+    }
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(fallback)) {
+      return Array.isArray(parsed) ? parsed : fallback
+    }
+    if (fallback !== null && typeof fallback === 'object') {
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return fallback
+      }
+      return { ...fallback, ...parsed }
+    }
+    return parsed !== undefined ? parsed : fallback
+  } catch (err) {
+    console.warn(`[SITEGUARD] Failed loading "${key}" from localStorage, falling back to default:`, err)
+    return fallback
+  }
+}
+
+function saveToStorage(key, value) {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return
+  }
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch (err) {
+    console.warn(`[SITEGUARD] Failed saving "${key}" to localStorage:`, err)
+  }
+}
+
+function removeFromStorage(key) {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return
+  }
+  try {
+    window.localStorage.removeItem(key)
+  } catch (err) {
+    console.warn(`[SITEGUARD] Failed removing "${key}" from localStorage:`, err)
+  }
+}
+
 const NAV_CONFIG = {
   'Dashboard': {
     title: 'Construction Risk Intelligence',
@@ -300,6 +435,11 @@ const NAV_CONFIG = {
     subtitle: 'Prioritized Telemetry Anomalies & Real-Time Field Escalations',
     tag: 'INCIDENT QUEUE'
   },
+  'Photo Risk Analyzer': {
+    title: 'Construction Photo Risk Analyzer',
+    subtitle: 'Multimodal Vision AI Hazard Detection & PPE Compliance Scanner',
+    tag: 'VISION AI'
+  },
   'Settings': {
     title: 'Platform & Agent Configuration',
     subtitle: 'Autonomous Scoring Thresholds, Sensor Baselines & Controls',
@@ -321,12 +461,99 @@ function App() {
   const [sweepResult, setSweepResult] = useState(null)
   const [activeKpiModal, setActiveKpiModal] = useState(null)
 
-  // Interactive Data States
-  const [alerts, setAlerts] = useState(INITIAL_ALERTS)
-  const [hazards, setHazards] = useState(INITIAL_HAZARDS)
-  const [agentLogs, setAgentLogs] = useState(AGENT_DELIBERATIONS)
+  // Interactive Data States with Reliable LocalStorage Persistence
+  const [alerts, setAlerts] = useState(() => loadFromStorage(STORAGE_KEYS.ALERTS, INITIAL_ALERTS))
+  const [hazards, setHazards] = useState(() => loadFromStorage(STORAGE_KEYS.HAZARDS, INITIAL_HAZARDS))
+  const [agentLogs, setAgentLogs] = useState(() => loadFromStorage(STORAGE_KEYS.AGENT_LOGS, AGENT_DELIBERATIONS))
+  const [settings, setSettings] = useState(() => loadFromStorage(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS))
+  const [reports, setReports] = useState(() => loadFromStorage(STORAGE_KEYS.REPORTS, INITIAL_REPORTS))
+  const [auditSweepCount, setAuditSweepCount] = useState(() => loadFromStorage(STORAGE_KEYS.SWEEP_COUNT, 24))
   const [isSimulatingSweep, setIsSimulatingSweep] = useState(false)
-  const [auditSweepCount, setAuditSweepCount] = useState(24)
+  const [apiStatus, setApiStatus] = useState('checking') // 'checking' | 'connected' | 'offline'
+
+  // Non-blocking initial backend check and data synchronization
+  useEffect(() => {
+    let isMounted = true
+
+    async function syncBackendData() {
+      try {
+        const health = await checkBackendHealth()
+        if (!isMounted) return
+
+        if (health && health.status === 'ok') {
+          setApiStatus('connected')
+
+          // Fetch hazards and alerts in parallel
+          const [backendHazards, backendAlerts] = await Promise.allSettled([
+            fetchHazards(),
+            fetchAlerts()
+          ])
+
+          if (!isMounted) return
+
+          // Merge hazards: backend records take precedence for matching IDs; new backend records prepended; demo records preserved
+          if (backendHazards.status === 'fulfilled' && Array.isArray(backendHazards.value) && backendHazards.value.length > 0) {
+            setHazards(prevHazards => {
+              const backendMap = new Map(backendHazards.value.map(h => [h.id, h]))
+              const updatedExisting = prevHazards.map(h => backendMap.has(h.id) ? backendMap.get(h.id) : h)
+              const existingIds = new Set(prevHazards.map(h => h.id))
+              const brandNewFromBackend = backendHazards.value.filter(h => !existingIds.has(h.id))
+              return [...brandNewFromBackend, ...updatedExisting]
+            })
+          }
+
+          // Merge alerts: backend records take precedence for matching IDs; new backend records prepended; demo records preserved
+          if (backendAlerts.status === 'fulfilled' && Array.isArray(backendAlerts.value) && backendAlerts.value.length > 0) {
+            setAlerts(prevAlerts => {
+              const backendMap = new Map(backendAlerts.value.map(a => [a.id, a]))
+              const updatedExisting = prevAlerts.map(a => backendMap.has(a.id) ? backendMap.get(a.id) : a)
+              const existingIds = new Set(prevAlerts.map(a => a.id))
+              const brandNewFromBackend = backendAlerts.value.filter(a => !existingIds.has(a.id))
+              return [...brandNewFromBackend, ...updatedExisting]
+            })
+          }
+        } else {
+          setApiStatus('offline')
+        }
+      } catch (err) {
+        if (isMounted) {
+          console.debug('[SITEGUARD] Backend check error (using local storage fallback):', err)
+          setApiStatus('offline')
+        }
+      }
+    }
+
+    syncBackendData()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  // Reactive localStorage writers (no infinite loop risk, safe serialization)
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.ALERTS, alerts)
+  }, [alerts])
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.HAZARDS, hazards)
+  }, [hazards])
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.AGENT_LOGS, agentLogs)
+  }, [agentLogs])
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.SETTINGS, settings)
+  }, [settings])
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.REPORTS, reports)
+  }, [reports])
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.SWEEP_COUNT, auditSweepCount)
+  }, [auditSweepCount])
 
   const notificationRef = useRef(null)
 
@@ -376,15 +603,28 @@ function App() {
   }, [currentNav.title])
 
   const handleResetDemoData = () => {
+    // Clear persisted custom data from localStorage
+    removeFromStorage(STORAGE_KEYS.HAZARDS)
+    removeFromStorage(STORAGE_KEYS.ALERTS)
+    removeFromStorage(STORAGE_KEYS.AGENT_LOGS)
+    removeFromStorage(STORAGE_KEYS.SETTINGS)
+    removeFromStorage(STORAGE_KEYS.REPORTS)
+    removeFromStorage(STORAGE_KEYS.SWEEP_COUNT)
+
+    // Reset React memory state to default demo benchmarks
     setAlerts(INITIAL_ALERTS)
     setHazards(INITIAL_HAZARDS)
     setAgentLogs(AGENT_DELIBERATIONS)
+    setSettings(DEFAULT_SETTINGS)
+    setReports(INITIAL_REPORTS)
+    setAuditSweepCount(24)
+
     setSelectedSite('All Sites')
     setSeverityFilter('All')
     setSearchQuery('')
     setSweepResult(null)
     setActiveKpiModal(null)
-    showToast('Demo datasets restored to baseline state.')
+    showToast('Demo datasets and local storage restored to baseline state.')
   }
 
   // Cursor Spotlight Ref
@@ -404,6 +644,7 @@ function App() {
   const navItems = [
     { name: 'Dashboard', icon: 'dashboard' },
     { name: 'Site Risk Agent', icon: 'agent' },
+    { name: 'Photo Risk Analyzer', icon: 'camera' },
     { name: 'Register Hazard', icon: 'hazard' },
     { name: 'Safety Monitoring', icon: 'safety' },
     { name: 'Compliance', icon: 'compliance' },
@@ -438,24 +679,55 @@ function App() {
   const handleDismissAlert = (id) => {
     setAlerts(prev => prev.filter(a => a.id !== id))
     showToast(`Alert ${id} removed from feed.`)
+
+    if (apiStatus === 'connected') {
+      deleteAlert(id).catch(err => {
+        // 404 is expected for demo alerts only stored locally
+        if (!err.message?.includes('404')) {
+          console.warn(`[SITEGUARD] Backend alert dismissal error for ${id}:`, err)
+        }
+      })
+    }
   }
 
   // Interactive: Acknowledge Alert (Requirement 5)
   const handleAcknowledgeAlert = (id) => {
+    let targetAlert = null
     setAlerts(prev => prev.map(a => {
       if (a.id === id) {
         const nextStatus = a.status === 'Acknowledged' ? 'Active' : 'Acknowledged'
         showToast(`Alert ${id} status updated to ${nextStatus}.`)
-        return { ...a, status: nextStatus }
+        targetAlert = { ...a, status: nextStatus }
+        return targetAlert
       }
       return a
     }))
+
+    if (apiStatus === 'connected' && targetAlert) {
+      updateAlert(id, { status: targetAlert.status }).catch(err => {
+        if (!err.message?.includes('404')) {
+          console.warn(`[SITEGUARD] Backend alert acknowledge error for ${id}:`, err)
+        }
+      })
+    }
   }
 
   // Interactive: Mark All Alerts Acknowledged
   const handleMarkAllAlertsAcknowledged = () => {
     setAlerts(prev => prev.map(a => ({ ...a, status: 'Acknowledged' })))
     showToast('All active alerts marked as Acknowledged.')
+
+    if (apiStatus === 'connected') {
+      alerts.forEach(a => {
+        if (a.status !== 'Acknowledged') {
+          updateAlert(a.id, { status: 'Acknowledged' }).catch(err => {
+            if (!err.message?.includes('404')) {
+              console.warn(`[SITEGUARD] Backend batch alert acknowledge error for ${a.id}:`, err)
+            }
+          })
+        }
+      })
+    }
   }
 
   // Interactive: Acknowledge Agent Log entry
@@ -472,17 +744,23 @@ function App() {
 
   // Interactive: Toggle Hazard status & sync linked alerts (Day 2 Step 4)
   const handleToggleHazard = (id) => {
+    let nextStatus = 'Resolved'
+    let linkedAlertId = null
+    let nextAlertStatus = 'Acknowledged'
+
     setHazards(prev => prev.map(h => {
       if (h.id === id) {
-        const nextStatus = h.status === 'Resolved' ? 'Open' : 'Resolved'
+        nextStatus = h.status === 'Resolved' ? 'Open' : 'Resolved'
         showToast(`Hazard ${id} status set to ${nextStatus}.`)
 
         // Synchronize linked alert status if present (Requirement 8)
         setAlerts(prevAlerts => prevAlerts.map(a => {
           if (a.hazardId === id) {
+            linkedAlertId = a.id
+            nextAlertStatus = nextStatus === 'Resolved' ? 'Acknowledged' : 'Active'
             return {
               ...a,
-              status: nextStatus === 'Resolved' ? 'Acknowledged' : 'Active'
+              status: nextAlertStatus
             }
           }
           return a
@@ -495,16 +773,32 @@ function App() {
       }
       return h
     }))
+
+    if (apiStatus === 'connected') {
+      updateHazard(id, { status: nextStatus }).catch(err => {
+        if (!err.message?.includes('404')) {
+          console.warn(`[SITEGUARD] Backend hazard update error for ${id}:`, err)
+        }
+      })
+      if (linkedAlertId) {
+        updateAlert(linkedAlertId, { status: nextAlertStatus }).catch(err => {
+          if (!err.message?.includes('404')) {
+            console.warn(`[SITEGUARD] Backend linked alert update error for ${linkedAlertId}:`, err)
+          }
+        })
+      }
+    }
   }
 
   // Interactive: Register Hazard & auto-dispatch High/Critical Alerts (Day 2 Step 4)
   const handleRegisterHazard = (newHazard) => {
     setHazards(prev => [newHazard, ...prev])
 
+    let generatedAlert = null
     // Requirement 8: Make high and critical hazards appear in the existing Alerts section.
     // Keep alert counts synchronized with the hazard data.
     if (newHazard.priority === 'Critical' || newHazard.priority === 'High') {
-      const generatedAlert = {
+      generatedAlert = {
         id: `ALT-${Math.floor(410 + Math.random() * 580)}`,
         hazardId: newHazard.id,
         title: `${newHazard.priority} Hazard Alert: ${newHazard.hazard}`,
@@ -520,6 +814,32 @@ function App() {
       showToast(`[ALERT DISPATCHED] ${newHazard.priority} hazard added to Alerts Queue & Active Hazards Registry.`)
     } else {
       showToast(`Hazard ${newHazard.id} successfully registered with priority ${newHazard.priority}!`)
+    }
+
+    // Persist to backend if connected
+    if (apiStatus === 'connected') {
+      createHazard(newHazard)
+        .then(savedHazard => {
+          if (savedHazard && savedHazard.id) {
+            setHazards(prev => prev.map(h => h.id === newHazard.id ? { ...h, ...savedHazard } : h))
+          }
+        })
+        .catch(err => {
+          console.warn('[SITEGUARD] Backend hazard save error (retained locally):', err)
+          showToast(`Hazard ${newHazard.id} saved locally (backend sync pending).`)
+        })
+
+      if (generatedAlert) {
+        createAlert(generatedAlert)
+          .then(savedAlert => {
+            if (savedAlert && savedAlert.id) {
+              setAlerts(prev => prev.map(a => a.id === generatedAlert.id ? { ...a, ...savedAlert } : a))
+            }
+          })
+          .catch(err => {
+            console.warn('[SITEGUARD] Backend alert save error (retained locally):', err)
+          })
+      }
     }
   }
 
@@ -581,7 +901,7 @@ function App() {
             {!sidebarCollapsed && (
               <div className="brand-text-block">
                 <span className="brand-title">SITEGUARD <span>AI</span></span>
-                <span className="brand-subtext">AGENTIC RISK OPS</span>
+                <span className="brand-subtext">Enterprise Risk Intelligence</span>
               </div>
             )}
           </div>
@@ -634,8 +954,8 @@ function App() {
             <div className="radar-beacon" />
             {!sidebarCollapsed && (
               <div className="telemetry-meta">
-                <span className="telemetry-name">SENTINEL AGENT v2.4</span>
-                <span className="telemetry-sub">SYNC: 14MS &bull; SWEEPS: {auditSweepCount}</span>
+                <span className="telemetry-name">SITEGUARD TELEMETRY</span>
+                <span className="telemetry-sub">SYNC: ACTIVE &bull; AUDITS: {auditSweepCount}</span>
               </div>
             )}
           </div>
@@ -650,9 +970,9 @@ function App() {
         {showDemoBanner && (
           <div className="demo-cyber-banner">
             <div className="demo-banner-indicator">
-              <span className="demo-chip">DEMO TELEMETRY SIMULATION</span>
+              <span className="demo-chip">ENTERPRISE EVALUATION</span>
               <span>
-                Simulated multi-agent construction risk telemetry for evaluation. No live hardware, cameras, or emergency services connected.
+                Multi-site risk intelligence active for evaluation. Connected to FastAPI vision pipeline and SQLite database.
               </span>
             </div>
             <button
@@ -709,7 +1029,43 @@ function App() {
             {/* AI Agent Status Pill */}
             <div className="agent-live-badge">
               <span className="agent-pulse-dot" />
-              <span>Agentic Sentinel Active</span>
+              <span>AI Sentinel Active</span>
+            </div>
+
+            {/* Backend Connectivity Status Indicator */}
+            <div
+              className="backend-status-badge"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 10px',
+                borderRadius: '9999px',
+                fontSize: '11px',
+                fontWeight: '500',
+                letterSpacing: '0.03em',
+                background: apiStatus === 'connected' ? 'rgba(16, 185, 129, 0.12)' : apiStatus === 'checking' ? 'rgba(234, 179, 8, 0.12)' : 'rgba(148, 163, 184, 0.12)',
+                border: `1px solid ${apiStatus === 'connected' ? 'rgba(16, 185, 129, 0.3)' : apiStatus === 'checking' ? 'rgba(234, 179, 8, 0.3)' : 'rgba(148, 163, 184, 0.3)'}`,
+                color: apiStatus === 'connected' ? '#10b981' : apiStatus === 'checking' ? '#eab308' : '#94a3b8'
+              }}
+              title={
+                apiStatus === 'connected'
+                  ? 'FastAPI Backend connected (http://127.0.0.1:8000)'
+                  : apiStatus === 'checking'
+                  ? 'Checking backend connection...'
+                  : 'Backend unavailable. Operating in Local Storage fallback mode.'
+              }
+            >
+              <span
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: apiStatus === 'connected' ? '#10b981' : apiStatus === 'checking' ? '#eab308' : '#94a3b8',
+                  boxShadow: apiStatus === 'connected' ? '0 0 8px rgba(16, 185, 129, 0.6)' : 'none'
+                }}
+              />
+              <span>{apiStatus === 'connected' ? 'Live Backend' : apiStatus === 'checking' ? 'Checking...' : 'Local Storage'}</span>
             </div>
 
             {/* Notification Control with Triage Tray */}
@@ -820,7 +1176,7 @@ function App() {
               <div className="operator-avatar">AM</div>
               <div className="operator-meta">
                 <span className="operator-callsign">A. Morgan</span>
-                <span className="operator-role">SAFETY DIR // AGT-01</span>
+                <span className="operator-role">Director of Safety &amp; Risk</span>
               </div>
             </div>
           </div>
@@ -869,6 +1225,17 @@ function App() {
             />
           )}
 
+          {activeNav === 'Photo Risk Analyzer' && (
+            <PhotoRiskAnalyzerView
+              allSites={ALL_SITES}
+              selectedSite={selectedSite}
+              onRegisterHazard={handleRegisterHazard}
+              onShowToast={showToast}
+              onNavigate={setActiveNav}
+              apiStatus={apiStatus}
+            />
+          )}
+
           {activeNav === 'Register Hazard' && (
             <HazardRegistrationView
               allSites={ALL_SITES}
@@ -898,12 +1265,19 @@ function App() {
           {activeNav === 'Insurance Risk' && (
             <InsuranceRiskView
               selectedSite={selectedSite}
+              hazards={hazards}
+              alerts={alerts}
               onShowToast={showToast}
             />
           )}
 
           {activeNav === 'Reports' && (
             <ReportsView
+              reports={reports}
+              hazards={hazards}
+              alerts={alerts}
+              settings={settings}
+              onAddReport={(newRep) => setReports(prev => [newRep, ...prev])}
               selectedSite={selectedSite}
               onShowToast={showToast}
             />
@@ -924,6 +1298,8 @@ function App() {
 
           {activeNav === 'Settings' && (
             <SettingsView
+              settings={settings}
+              onUpdateSettings={(updated) => setSettings(updated)}
               onShowToast={showToast}
               onResetDemoData={handleResetDemoData}
             />
@@ -969,8 +1345,7 @@ function App() {
 // Interactive Component: Expandable Hazard Safety Recommendations (Day 2 Step 4)
 // ============================================================================
 function HazardRecommendationRow({ item, onToggleHazard, onClose, onNavigate, colSpan = 6 }) {
-  const categoryRec = item.categoryRecommendation || getCategoryRecommendation(item.category || item.hazard)
-  const priorityGuide = item.priorityGuidance || getPriorityGuidance(item.priority || item.severity)
+  const { categoryRec, priorityGuide } = getHazardRecommendations(item)
   const priorityBadge = getPrototypePriority(item.riskScore || 50)
   const isHighOrCritical = (item.riskScore || 50) >= 50 || item.priority === 'High' || item.priority === 'Critical' || item.severity === 'High' || item.severity === 'Critical'
 
@@ -1139,10 +1514,41 @@ function DashboardView({
     ? allHazards 
     : allHazards.filter(h => h.site === selectedSite)
   
+  const totalHazardsCount = siteHazards.length
   const openHazardCount = siteHazards.filter(h => h.status !== 'Resolved').length
+  const resolvedHazardsCount = siteHazards.filter(h => h.status === 'Resolved').length
   const criticalHazardsCount = siteHazards.filter(h => (h.severity === 'Critical' || h.priority === 'Critical') && h.status !== 'Resolved').length
-  const criticalAlertsCount = allAlerts.filter(a => (selectedSite === 'All Sites' || a.site === selectedSite) && a.type === 'critical' && a.status !== 'Acknowledged').length
+  const highHazardsCount = siteHazards.filter(h => (h.severity === 'High' || h.priority === 'High') && h.status !== 'Resolved').length
+  const mediumHazardsCount = siteHazards.filter(h => (h.severity === 'Medium' || h.priority === 'Medium') && h.status !== 'Resolved').length
+  const lowHazardsCount = siteHazards.filter(h => (h.severity === 'Low' || h.priority === 'Low') && h.status !== 'Resolved').length
+
+  const activeAlerts = allAlerts.filter(a => (selectedSite === 'All Sites' || a.site === selectedSite) && a.status !== 'Acknowledged')
+  const activeAlertsCount = activeAlerts.length
+  const acknowledgedAlertsCount = allAlerts.filter(a => (selectedSite === 'All Sites' || a.site === selectedSite) && a.status === 'Acknowledged').length
+  const criticalAlertsCount = activeAlerts.filter(a => a.type === 'critical').length
   const criticalRiskCount = criticalHazardsCount + criticalAlertsCount
+
+  // Proportional percentages for the professional risk distribution chart
+  const distributionBase = totalHazardsCount || 1
+  const pctCritical = Math.max(0, Math.round((criticalHazardsCount / distributionBase) * 100))
+  const pctHigh = Math.max(0, Math.round((highHazardsCount / distributionBase) * 100))
+  const pctMedium = Math.max(0, Math.round((mediumHazardsCount / distributionBase) * 100))
+  const pctLow = Math.max(0, Math.round((lowHazardsCount / distributionBase) * 100))
+  const pctResolved = Math.max(0, Math.round((resolvedHazardsCount / distributionBase) * 100))
+
+  // Calculated overall risk posture indicator
+  const portfolioRiskIndex = openHazardCount > 0
+    ? Math.round(siteHazards.filter(h => h.status !== 'Resolved').reduce((sum, h) => sum + (h.riskScore || 50), 0) / openHazardCount)
+    : 16
+
+  const overallRiskLevel = criticalHazardsCount > 0 ? 'Critical' : highHazardsCount > 0 ? 'High' : mediumHazardsCount > 0 ? 'Medium' : 'Low'
+  const overallRiskLabel = criticalHazardsCount > 0
+    ? 'ELEVATED RISK POSTURE • ACTION REQUIRED'
+    : highHazardsCount > 0
+    ? 'HEIGHTENED WATCH • ACTIVE MONITORING'
+    : mediumHazardsCount > 0
+    ? 'MODERATE PROFILE • OPERATIONS NOMINAL'
+    : 'CONTROLLED PROFILE • RISK OPTIMAL'
 
   const complianceScore = selectedSite === 'All Sites' 
     ? '94.2%' 
@@ -1178,56 +1584,41 @@ function DashboardView({
         </div>
       )}
 
-      {/* Four Interactive Indicator Cards (KPIs - Requirement 6) */}
-      <section className="kpi-cards-grid animate-entrance delay-1">
-        {/* Active Sites / Selected Site Card */}
-        <div
-          className="kpi-card interactive"
-          onClick={() => onOpenKpiDetail('sites')}
-          role="button"
-          tabIndex={0}
-          title="Click to view Active Construction Sites breakdown"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              onOpenKpiDetail('sites')
-            }
-          }}
-        >
-          <div className="kpi-top-row">
-            <span className="kpi-label">{selectedSite === 'All Sites' ? 'Active Sites' : 'Selected Site'}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="kpi-detail-hint">Inspect ↗</span>
-              <div className="kpi-icon-pill cyan">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="4" y="2" width="16" height="20" rx="2" ry="2" />
-                  <line x1="8" y1="6" x2="16" y2="6" />
-                  <line x1="8" y1="10" x2="16" y2="10" />
-                  <line x1="8" y1="14" x2="16" y2="14" />
-                </svg>
-              </div>
-            </div>
-          </div>
-          <div className="kpi-value-row">
-            <span className="kpi-value">{selectedSite === 'All Sites' ? '6 Active' : '1 Active'}</span>
-            <span className="kpi-chip chip-good">
-              {selectedSite === 'All Sites' ? '+2 TELEMETRY' : `${selectedSiteData?.category?.toUpperCase()} RISK`}
-            </span>
-          </div>
-          <div className="kpi-note">
-            {selectedSite === 'All Sites'
-              ? '6 active zones • 664 workers on duty'
-              : `${selectedSite} • ${activeWorkers} workers • ${activeCranes} cranes`}
-          </div>
+      {/* Prominent But Tasteful Image Analysis Action (Requirement 3) */}
+      <section className="executive-vision-cta animate-entrance delay-1">
+        <div className="cta-text-group">
+          <span className="cta-eyebrow">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            YOLOv8 Computer Vision Pipeline
+          </span>
+          <h2 className="cta-title">Automated Construction Site Photo Risk Analyzer</h2>
+          <p className="cta-desc">
+            Upload field drone or mobile photos for local pixel-level object detection, spatial bounding-box hazard inspection, and verified hazard registration into the active risk matrix.
+          </p>
         </div>
+        <button
+          type="button"
+          className="cta-action-btn"
+          onClick={() => onNavigate('Photo Risk Analyzer')}
+          aria-label="Launch Photo Risk Analyzer"
+        >
+          <span>Analyze Construction Image</span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
+          </svg>
+        </button>
+      </section>
 
-        {/* Open Hazards Card */}
+      {/* Four Enterprise Indicator Cards (Total Hazards, Critical Hazards, Active Alerts, Resolved Hazards) */}
+      <section className="kpi-cards-grid animate-entrance delay-1">
+        {/* Total Hazards Card */}
         <div
           className="kpi-card interactive"
           onClick={() => onOpenKpiDetail('hazards')}
           role="button"
           tabIndex={0}
-          title="Click to view Open Hazards breakdown"
+          title="Click to view Total Hazards breakdown"
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault()
@@ -1236,10 +1627,10 @@ function DashboardView({
           }}
         >
           <div className="kpi-top-row">
-            <span className="kpi-label">Open Hazards</span>
+            <span className="kpi-label">Total Hazards</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span className="kpi-detail-hint">Inspect ↗</span>
-              <div className="kpi-icon-pill amber">
+              <div className="kpi-icon-pill cyan">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
                   <line x1="12" y1="9" x2="12" y2="13" />
@@ -1249,23 +1640,23 @@ function DashboardView({
             </div>
           </div>
           <div className="kpi-value-row">
-            <span className="kpi-value">{openHazardCount}</span>
-            <span className="kpi-chip chip-good">&darr; -6 PAST 24H</span>
+            <span className="kpi-value">{totalHazardsCount}</span>
+            <span className="kpi-chip chip-good">
+              {openHazardCount} OPEN
+            </span>
           </div>
           <div className="kpi-note">
-            {siteHazards.filter(h => h.severity === 'Critical' && h.status !== 'Resolved').length} Critical &bull;{' '}
-            {siteHazards.filter(h => h.severity === 'High' && h.status !== 'Resolved').length} High &bull;{' '}
-            {siteHazards.filter(h => h.severity === 'Medium' && h.status !== 'Resolved').length} Moderate
+            {openHazardCount} active incidents &bull; {resolvedHazardsCount} resolved
           </div>
         </div>
 
-        {/* Critical Risks Card */}
+        {/* Critical Hazards Card */}
         <div
           className="kpi-card interactive"
           onClick={() => onOpenKpiDetail('risks')}
           role="button"
           tabIndex={0}
-          title="Click to view Critical Risk escalation vectors"
+          title="Click to view Critical Hazards"
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault()
@@ -1274,7 +1665,7 @@ function DashboardView({
           }}
         >
           <div className="kpi-top-row">
-            <span className="kpi-label">Critical Risks</span>
+            <span className="kpi-label">Critical Hazards</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span className="kpi-detail-hint">Inspect ↗</span>
               <div className="kpi-icon-pill crimson">
@@ -1287,23 +1678,56 @@ function DashboardView({
             </div>
           </div>
           <div className="kpi-value-row">
-            <span className="kpi-value">{criticalRiskCount}</span>
+            <span className="kpi-value">{criticalHazardsCount}</span>
             <span className="kpi-chip chip-alert">ACTION REQ</span>
           </div>
           <div className="kpi-note">
-            {selectedSite === 'All Sites'
-              ? 'Auto-escalated to Field Superintendents'
-              : `Specific to ${selectedSite} perimeter`}
+            {criticalAlertsCount} linked active alerts &bull; {criticalRiskCount} critical risk vectors
           </div>
         </div>
 
-        {/* Compliance Score Card */}
+        {/* Active Alerts Card */}
+        <div
+          className="kpi-card interactive"
+          onClick={() => onNavigate('Alerts')}
+          role="button"
+          tabIndex={0}
+          title="Click to view Active Alerts"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              onNavigate('Alerts')
+            }
+          }}
+        >
+          <div className="kpi-top-row">
+            <span className="kpi-label">Active Alerts</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span className="kpi-detail-hint">Inspect ↗</span>
+              <div className="kpi-icon-pill amber">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div className="kpi-value-row">
+            <span className="kpi-value">{activeAlertsCount}</span>
+            <span className="kpi-chip chip-good">LIVE QUEUE</span>
+          </div>
+          <div className="kpi-note">
+            {acknowledgedAlertsCount} acknowledged &bull; {criticalAlertsCount} critical alerts
+          </div>
+        </div>
+
+        {/* Resolved Hazards Card */}
         <div
           className="kpi-card interactive"
           onClick={() => onOpenKpiDetail('compliance')}
           role="button"
           tabIndex={0}
-          title="Click to view OSHA 1926 compliance breakdown"
+          title="Click to view Resolved Hazards and compliance performance"
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault()
@@ -1312,7 +1736,7 @@ function DashboardView({
           }}
         >
           <div className="kpi-top-row">
-            <span className="kpi-label">Compliance Score</span>
+            <span className="kpi-label">Resolved Hazards</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span className="kpi-detail-hint">Inspect ↗</span>
               <div className="kpi-icon-pill emerald">
@@ -1324,10 +1748,115 @@ function DashboardView({
             </div>
           </div>
           <div className="kpi-value-row">
-            <span className="kpi-value">{complianceScore}</span>
-            <span className="kpi-chip chip-good">&uarr; +1.8%</span>
+            <span className="kpi-value">{resolvedHazardsCount}</span>
+            <span className="kpi-chip chip-good">
+              {Math.round((resolvedHazardsCount / distributionBase) * 100)}% CLOSED
+            </span>
           </div>
-          <div className="kpi-note">OSHA 1926 &amp; ISO 45001 benchmark</div>
+          <div className="kpi-note">Compliance: {complianceScore} &bull; OSHA benchmark</div>
+        </div>
+      </section>
+
+      {/* Executive Risk Posture & Hazard Distribution Chart (Requirement 3) */}
+      <section className="risk-distribution-section animate-entrance delay-2">
+        <div className="risk-distribution-header">
+          <div className="panel-title-group">
+            <div className="panel-icon-badge">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="20" x2="18" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="6" y1="20" x2="6" y2="14" />
+              </svg>
+            </div>
+            <div>
+              <span className="panel-heading">Overall Risk Posture &amp; Hazard Distribution</span>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '2px' }}>
+                Risk Index: <strong style={{ color: '#ffffff' }}>{portfolioRiskIndex}/100</strong> &bull; Compliance Benchmark: <strong style={{ color: 'var(--emerald-light)' }}>{complianceScore}</strong>
+              </div>
+            </div>
+          </div>
+          <span className={`risk-posture-badge ${overallRiskLevel.toLowerCase()}`}>
+            <span className="badge-dot" />
+            {overallRiskLabel}
+          </span>
+        </div>
+
+        {/* Multi-segment Distribution Bar Chart */}
+        <div className="distribution-bar-track" title="Proportional Distribution: Critical, High, Medium, Low, Resolved">
+          {pctCritical > 0 && (
+            <div
+              className="distribution-segment critical"
+              style={{ width: `${pctCritical}%` }}
+              title={`Critical: ${criticalHazardsCount} (${pctCritical}%)`}
+            />
+          )}
+          {pctHigh > 0 && (
+            <div
+              className="distribution-segment high"
+              style={{ width: `${pctHigh}%` }}
+              title={`High: ${highHazardsCount} (${pctHigh}%)`}
+            />
+          )}
+          {pctMedium > 0 && (
+            <div
+              className="distribution-segment medium"
+              style={{ width: `${pctMedium}%` }}
+              title={`Medium: ${mediumHazardsCount} (${pctMedium}%)`}
+            />
+          )}
+          {pctLow > 0 && (
+            <div
+              className="distribution-segment low"
+              style={{ width: `${pctLow}%` }}
+              title={`Low: ${lowHazardsCount} (${pctLow}%)`}
+            />
+          )}
+          {pctResolved > 0 && (
+            <div
+              className="distribution-segment resolved"
+              style={{ width: `${pctResolved}%` }}
+              title={`Resolved: ${resolvedHazardsCount} (${pctResolved}%)`}
+            />
+          )}
+        </div>
+
+        {/* Distribution Legend Grid */}
+        <div className="distribution-legend-grid">
+          <div className="distribution-legend-item">
+            <span className="dist-dot critical" />
+            <div className="dist-info">
+              <span className="dist-label">Critical Risks</span>
+              <span className="dist-value">{criticalHazardsCount} <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-dim)' }}>({pctCritical}%)</span></span>
+            </div>
+          </div>
+          <div className="distribution-legend-item">
+            <span className="dist-dot high" />
+            <div className="dist-info">
+              <span className="dist-label">High Priority</span>
+              <span className="dist-value">{highHazardsCount} <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-dim)' }}>({pctHigh}%)</span></span>
+            </div>
+          </div>
+          <div className="distribution-legend-item">
+            <span className="dist-dot medium" />
+            <div className="dist-info">
+              <span className="dist-label">Medium Priority</span>
+              <span className="dist-value">{mediumHazardsCount} <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-dim)' }}>({pctMedium}%)</span></span>
+            </div>
+          </div>
+          <div className="distribution-legend-item">
+            <span className="dist-dot low" />
+            <div className="dist-info">
+              <span className="dist-label">Low Risk</span>
+              <span className="dist-value">{lowHazardsCount} <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-dim)' }}>({pctLow}%)</span></span>
+            </div>
+          </div>
+          <div className="distribution-legend-item">
+            <span className="dist-dot resolved" />
+            <div className="dist-info">
+              <span className="dist-label">Resolved</span>
+              <span className="dist-value">{resolvedHazardsCount} <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-dim)' }}>({pctResolved}%)</span></span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -2557,6 +3086,1141 @@ function HazardRegistrationView({
 }
 
 // ============================================================================
+// Sub-View: 3. Construction Photo Risk Analyzer (Multimodal Vision AI)
+// ============================================================================
+
+// Sample scenario preset data URLs and demonstration templates
+const SAMPLE_PRESETS = [
+  {
+    id: 'sample-scaffold',
+    title: 'Pier 3 Scaffold Deck - Leading Edge Fall Risk',
+    site: 'Riverside Bridge Expansion',
+    filename: 'pier3_scaffold_perimeter.jpg',
+    size: 2842000,
+    type: 'image/jpeg',
+    svgDataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"><rect width="600" height="400" fill="%230b1329"/><rect x="40" y="240" width="520" height="130" fill="%231e293b" stroke="%2338bdf8" stroke-width="2"/><line x1="80" y1="120" x2="80" y2="240" stroke="%23e2e8f0" stroke-width="4"/><line x1="160" y1="120" x2="160" y2="240" stroke="%23e2e8f0" stroke-width="4"/><line x1="240" y1="120" x2="240" y2="240" stroke="%23e2e8f0" stroke-width="4"/><line x1="80" y1="140" x2="240" y2="140" stroke="%23e2e8f0" stroke-width="3"/><line x1="80" y1="200" x2="240" y2="200" stroke="%23e2e8f0" stroke-width="3"/><line x1="80" y1="140" x2="160" y2="200" stroke="%2364748b" stroke-width="2"/><line x1="160" y1="140" x2="240" y2="200" stroke="%2364748b" stroke-width="2"/><rect x="240" y="235" width="280" height="6" fill="%23ff3366" stroke="%23ff3366" stroke-dasharray="4,4"/><circle cx="280" cy="210" r="14" fill="%23eab308"/><line x1="280" y1="224" x2="280" y2="238" stroke="%23e2e8f0" stroke-width="3"/><rect x="250" y="165" width="130" height="24" rx="4" fill="%23ff3366"/><text x="315" y="181" font-family="monospace" font-size="10" fill="%23ffffff" text-anchor="middle" font-weight="bold">MISSING MIDRAIL</text><polygon points="460,140 430,195 490,195" fill="%23ff3366"/><text x="460" y="184" font-family="sans-serif" font-size="20" font-weight="bold" fill="%23ffffff" text-anchor="middle">!</text><text x="460" y="215" font-family="monospace" font-size="12" fill="%23ff3366" text-anchor="middle" font-weight="bold">FALL HAZARD</text><text x="300" y="45" font-family="sans-serif" font-size="16" fill="%2338bdf8" text-anchor="middle" font-weight="bold">SITE CAMERA: PIER 3 ELEVATED SCAFFOLDING</text><text x="300" y="68" font-family="monospace" font-size="11" fill="%2394a3b8" text-anchor="middle">SYNTHETIC TELEMETRY FRAME // ISO 45001 PATROL</text></svg>`,
+    hazards: [
+      {
+        id: 'DEMO-H1',
+        name: 'Missing Guardrails & Midrails along Scaffolding Perimeter',
+        category: 'Fall risk',
+        severity: 'Critical',
+        numericSeverity: 5,
+        numericLikelihood: 5,
+        location: 'Level 12 cantilevered exterior scaffold edge (Sector B)',
+        confidence: null,
+        explanation: 'Scaffolding tier exceeds 10 feet in height with open perimeter edges missing intermediate midrails and toprails, in acute violation of OSHA 1926.451(g)(1).',
+        recommendation: 'Immediately red-tag scaffolding tier, erect standard 42-inch guardrails with toe boards, and verify competent person inspection prior to worker re-entry.'
+      },
+      {
+        id: 'DEMO-H2',
+        name: 'Worker in Leading-Edge Zone without Secondary Arrest Tether',
+        category: 'PPE violation',
+        severity: 'Critical',
+        numericSeverity: 5,
+        numericLikelihood: 4,
+        location: 'Upper deck concrete slab edge within 6ft buffer',
+        confidence: null,
+        explanation: 'Personnel detected operating within 6 feet of an unprotected edge without anchorage tie-off or personal fall arrest system (OSHA 1926.501(b)(1)).',
+        recommendation: 'Issue immediate stop-work directive for leading-edge operations and mandate 100% harness hookup to certified lifeline anchorages.'
+      }
+    ]
+  },
+  {
+    id: 'sample-ppe',
+    title: 'Active Crane Radius - Ground Crew PPE Infraction',
+    site: 'Metro Heights Tower A',
+    filename: 'crane_swing_ground_crew.jpg',
+    size: 3410500,
+    type: 'image/jpeg',
+    svgDataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"><rect width="600" height="400" fill="%230b1329"/><line x1="120" y1="360" x2="120" y2="80" stroke="%23ff8c00" stroke-width="6"/><line x1="120" y1="80" x2="380" y2="80" stroke="%23ff8c00" stroke-width="5"/><line x1="280" y1="80" x2="280" y2="210" stroke="%2394a3b8" stroke-width="2" stroke-dasharray="3,3"/><rect x="268" y="210" width="24" height="20" fill="%23eab308"/><circle cx="280" cy="290" r="16" fill="%23cbd5e1"/><line x1="280" y1="306" x2="280" y2="345" stroke="%23cbd5e1" stroke-width="4"/><circle cx="340" cy="295" r="16" fill="%23cbd5e1"/><line x1="340" y1="311" x2="340" y2="345" stroke="%23cbd5e1" stroke-width="4"/><circle cx="280" cy="290" r="24" fill="none" stroke="%23ff3366" stroke-width="3" stroke-dasharray="4,4"/><rect x="210" y="240" width="140" height="22" rx="4" fill="%23ff3366"/><text x="280" y="255" font-family="monospace" font-size="10" fill="%23ffffff" text-anchor="middle" font-weight="bold">NO HARDHAT IN SWING</text><text x="300" y="45" font-family="sans-serif" font-size="16" fill="%2338bdf8" text-anchor="middle" font-weight="bold">SITE CAMERA: CRANE #02 HOIST RADIUS</text><text x="300" y="68" font-family="monospace" font-size="11" fill="%2394a3b8" text-anchor="middle">GROUND CREW PPE PATROL // SECTOR 3</text></svg>`,
+    hazards: [
+      {
+        id: 'DEMO-H3',
+        name: 'Personnel within Crane Boom Exclusion Envelope without Hardhat',
+        category: 'PPE violation',
+        severity: 'High',
+        numericSeverity: 4,
+        numericLikelihood: 4,
+        location: 'Ground level hoist transit corridor directly beneath crane jib',
+        confidence: null,
+        explanation: 'Ground riggers observed operating inside active crane hoisting arc without ANSI Z89.1 certified protective helmets, exposing personnel to severe overhead impact hazards.',
+        recommendation: 'Sound crane exclusion horn, verify hardhat compliance at access gate, and establish perimeter barrier tape around the swing envelope.'
+      },
+      {
+        id: 'DEMO-H4',
+        name: 'Missing High-Visibility Safety Vests in Heavy Equipment Lane',
+        category: 'PPE violation',
+        severity: 'Medium',
+        numericSeverity: 3,
+        numericLikelihood: 3,
+        location: 'Active forklift and vehicle staging intersection',
+        confidence: null,
+        explanation: 'Workers wearing dark non-reflective clothing in a shared vehicular loading corridor without Class 2 high-visibility retroreflective vests.',
+        recommendation: 'Equip workers with high-visibility reflective vests before permitting work in active traffic or machinery lanes.'
+      }
+    ]
+  },
+  {
+    id: 'sample-trench',
+    title: 'Sector 4 Deep Foundation Cut - Unshored Trench Subsidence',
+    site: 'City Center Transit Hub',
+    filename: 'subterranean_trench_cut.jpg',
+    size: 4120800,
+    type: 'image/jpeg',
+    svgDataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"><rect width="600" height="400" fill="%230b1329"/><polygon points="0,180 200,180 220,360 0,360" fill="%23473322"/><polygon points="380,180 600,180 600,360 360,360" fill="%23473322"/><rect x="220" y="200" width="140" height="160" fill="%231e293b"/><line x1="200" y1="180" x2="220" y2="360" stroke="%23ff3366" stroke-width="4"/><line x1="380" y1="180" x2="360" y2="360" stroke="%23ff3366" stroke-width="4"/><text x="290" y="270" font-family="monospace" font-size="12" fill="%23ff3366" text-anchor="middle" font-weight="bold">NO SHORING BOX</text><text x="290" y="295" font-family="monospace" font-size="11" fill="%23e2e8f0" text-anchor="middle">DEPTH: 7.4 FT</text><rect x="420" y="140" width="90" height="36" fill="%23eab308"/><text x="465" y="162" font-family="monospace" font-size="10" fill="%23000000" text-anchor="middle" font-weight="bold">EXCAVATOR</text><text x="300" y="45" font-family="sans-serif" font-size="16" fill="%2338bdf8" text-anchor="middle" font-weight="bold">GEOTECHNICAL HUD: TRENCH CROSS-SECTION</text><text x="300" y="68" font-family="monospace" font-size="11" fill="%2394a3b8" text-anchor="middle">OSHA 1926.652 CAVE-IN RISK SCANNER</text></svg>`,
+    hazards: [
+      {
+        id: 'DEMO-H5',
+        name: 'Vertical Trench Wall Exceeding 5ft Depth without Shoring or Shield',
+        category: 'Excavation hazard',
+        severity: 'Critical',
+        numericSeverity: 5,
+        numericLikelihood: 4,
+        location: 'Subterranean trench cut facing west embankment',
+        confidence: null,
+        explanation: 'Excavation measured at 7.4 feet depth in Type B soil with vertical non-benched walls lacking protective trench boxes or hydraulic struts, violating OSHA 1926.652.',
+        recommendation: 'Evacuate personnel immediately. Prohibit trench entry until certified trench box shoring or engineered benching is installed and approved.'
+      },
+      {
+        id: 'DEMO-H6',
+        name: 'Heavy Hydraulic Excavator Positioned within 2ft of Trench Crest',
+        category: 'Equipment hazard',
+        severity: 'High',
+        numericSeverity: 4,
+        numericLikelihood: 3,
+        location: 'Excavation trench lip perimeter edge',
+        confidence: null,
+        explanation: 'Superimposed equipment surcharge load located inside the soil angle of repose, creating micro-fissure shear risk and trench wall collapse.',
+        recommendation: 'Relocate excavator minimum 5 feet back from trench crest and inspect soil stability before trench resumption.'
+      }
+    ]
+  },
+  {
+    id: 'sample-nominal',
+    title: 'Zone D Industrial Logistics Hub - Nominal Compliant Zone',
+    site: 'Bayfront Logistics Hub',
+    filename: 'bayfront_compliant_assembly.jpg',
+    size: 1985000,
+    type: 'image/jpeg',
+    svgDataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"><rect width="600" height="400" fill="%230b1329"/><rect x="60" y="220" width="480" height="140" fill="%231e293b" stroke="%2310b981" stroke-width="2"/><line x1="60" y1="220" x2="540" y2="220" stroke="%2310b981" stroke-width="6"/><circle cx="200" cy="180" r="14" fill="%2310b981"/><circle cx="380" cy="180" r="14" fill="%2310b981"/><circle cx="200" cy="170" r="8" fill="%23ffffff"/><circle cx="380" cy="170" r="8" fill="%23ffffff"/><rect x="180" y="270" width="240" height="44" rx="8" fill="%2310b981" fill-opacity="0.15" stroke="%2310b981"/><text x="300" y="297" font-family="monospace" font-size="13" fill="%2310b981" text-anchor="middle" font-weight="bold">ALL OSHA 1926 BENCHMARKS NOMINAL</text><text x="300" y="45" font-family="sans-serif" font-size="16" fill="%2310b981" text-anchor="middle" font-weight="bold">SITE CAMERA: FABRICATION BAY D</text><text x="300" y="68" font-family="monospace" font-size="11" fill="%2394a3b8" text-anchor="middle">AUTOMATED PERIMETER & PPE VERIFICATION NOMINAL</text></svg>`,
+    hazards: []
+  }
+]
+
+// Methodical hazard weighting formula calculation
+function computePhotoRiskScore(hazards = []) {
+  if (!hazards || hazards.length === 0) {
+    return { score: 0, category: 'Low', badgeClass: 'low' }
+  }
+  let total = 0
+  hazards.forEach(h => {
+    const sev = (h.severity || '').toLowerCase()
+    if (sev === 'critical') total += 40
+    else if (sev === 'high') total += 25
+    else if (sev === 'medium') total += 12
+    else total += 5
+  })
+  const score = Math.min(100, total)
+  let category = 'Low'
+  let badgeClass = 'low'
+  if (score >= 75) {
+    category = 'Critical'
+    badgeClass = 'critical'
+  } else if (score >= 50) {
+    category = 'High'
+    badgeClass = 'high'
+  } else if (score >= 25) {
+    category = 'Medium'
+    badgeClass = 'medium'
+  }
+  return { score, category, badgeClass }
+}
+
+function PhotoRiskAnalyzerView({ allSites, selectedSite, onRegisterHazard, onShowToast, onNavigate, apiStatus }) {
+  const initialSite = selectedSite && selectedSite !== 'All Sites'
+    ? selectedSite
+    : (allSites[0]?.name || 'Riverside Bridge Expansion')
+
+  const [site, setSite] = useState(initialSite)
+  const [selectedImageFile, setSelectedImageFile] = useState(null)
+  const [previewUrl, setPreviewUrl] = useState(null)
+  const [annotatedUrl, setAnnotatedUrl] = useState(null)
+  const [showAnnotated, setShowAnnotated] = useState(true)
+  const [imageMeta, setImageMeta] = useState(null)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [analysisError, setAnalysisError] = useState(null)
+  const [analysisResults, setAnalysisResults] = useState(null)
+  const [registeredIds, setRegisteredIds] = useState(new Set())
+  const [dragActive, setDragActive] = useState(false)
+  const [showKeyModal, setShowKeyModal] = useState(false)
+  const [showScoringDetails, setShowScoringDetails] = useState(false)
+  const [visionStatus, setVisionStatus] = useState(null)
+  const [confThreshold] = useState(0.25)
+
+  // API Key management (Environment variable first, then browser session/localStorage)
+  const [apiKey, setApiKey] = useState(() => {
+    return (
+      (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) ||
+      (typeof window !== 'undefined' && window.localStorage ? window.localStorage.getItem('siteguard_gemini_api_key') : '') ||
+      ''
+    )
+  })
+  const [keyInput, setKeyInput] = useState('')
+
+  const fileInputRef = useRef(null)
+
+  const isLiveConfigured = Boolean(apiKey && apiKey.trim().length > 10)
+
+  // Query backend vision service status on mount or when apiStatus changes
+  useEffect(() => {
+    let isMounted = true
+    if (apiStatus === 'connected') {
+      getVisionStatus()
+        .then(res => {
+          if (isMounted && res && res.available) {
+            setVisionStatus(res)
+          }
+        })
+        .catch(() => {})
+    }
+    return () => { isMounted = false }
+  }, [apiStatus])
+
+  // Validate uploaded file
+  const processUploadedFile = (file) => {
+    setAnalysisError(null)
+    const validMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg']
+    const hasValidExt = /\.(jpe?g|png|webp)$/i.test(file.name)
+
+    if (!validMimes.includes(file.type.toLowerCase()) && !hasValidExt) {
+      const err = 'Invalid file type. Please upload a JPG, JPEG, PNG, or WEBP construction photo.'
+      setAnalysisError(err)
+      onShowToast(err)
+      return
+    }
+
+    const MAX_SIZE = 15 * 1024 * 1024 // 15 MB limit
+    if (file.size > MAX_SIZE) {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1)
+      const err = `File exceeds 15 MB limit (${sizeMb} MB). Please compress or choose a smaller image.`
+      setAnalysisError(err)
+      onShowToast(err)
+      return
+    }
+
+    const objectUrl = URL.createObjectURL(file)
+    setSelectedImageFile(file)
+    setPreviewUrl(objectUrl)
+    setAnnotatedUrl(null)
+    setShowAnnotated(false)
+    setImageMeta({
+      name: file.name,
+      size: file.size,
+      sizeFormatted: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+      type: file.type || 'image/jpeg'
+    })
+    setAnalysisResults(null)
+    setRegisteredIds(new Set())
+  }
+
+  const handleFileInputChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      processUploadedFile(e.target.files[0])
+    }
+  }
+
+  const handleDragOver = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(true)
+  }
+
+  const handleDragLeave = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+  }
+
+  const handleDrop = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      processUploadedFile(e.dataTransfer.files[0])
+    }
+  }
+
+  const handleRemoveImage = () => {
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl)
+    }
+    setSelectedImageFile(null)
+    setPreviewUrl(null)
+    setAnnotatedUrl(null)
+    setShowAnnotated(false)
+    setImageMeta(null)
+    setAnalysisResults(null)
+    setAnalysisError(null)
+    setRegisteredIds(new Set())
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    onShowToast('Uploaded photo removed.')
+  }
+
+  const handleSelectPreset = (preset) => {
+    setAnalysisError(null)
+    setSelectedImageFile(null)
+    setPreviewUrl(preset.svgDataUrl)
+    setAnnotatedUrl(null)
+    setShowAnnotated(false)
+    setImageMeta({
+      name: preset.filename,
+      size: preset.size,
+      sizeFormatted: `${(preset.size / (1024 * 1024)).toFixed(2)} MB`,
+      type: preset.type
+    })
+    setSite(preset.site)
+    setAnalysisResults(null)
+    setRegisteredIds(new Set())
+    onShowToast(`Sample scenario loaded: ${preset.title}`)
+  }
+
+  // Computer Vision Model Execution (Real YOLO Inference & Fallback Options)
+  const handleAnalyzePhoto = async () => {
+    if (!previewUrl) return
+    setIsAnalyzing(true)
+    setAnalysisError(null)
+
+    // Option 1: Real Local YOLO Computer Vision Inference (Preferred when an actual photo is uploaded)
+    if (selectedImageFile && apiStatus === 'connected') {
+      try {
+        const data = await analyzePhoto(selectedImageFile, confThreshold)
+        const hazardsList = Array.isArray(data.hazards) ? data.hazards : []
+        const { score, category } = computePhotoRiskScore(hazardsList)
+
+        const riskCategory = data.cautiousRiskLevel || category
+
+        setAnalysisResults({
+          mode: 'yolo',
+          provider: data.model || 'YOLOv8n (Local Inference)',
+          summary: data.summary || 'YOLO computer vision inference complete.',
+          hazards: hazardsList,
+          score,
+          category: riskCategory,
+          badgeClass: riskCategory.toLowerCase() === 'indeterminate' ? 'medium' : (riskCategory.toLowerCase() === 'high' ? 'high' : riskCategory.toLowerCase() === 'critical' ? 'critical' : riskCategory.toLowerCase() === 'medium' ? 'medium' : 'low'),
+          inferenceTimeMs: data.inferenceTimeMs,
+          detectionsCount: data.detectionsCount,
+          modelDisclaimer: data.modelDisclaimer,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        })
+
+        if (data.annotatedImage) {
+          setAnnotatedUrl(data.annotatedImage)
+          setShowAnnotated(true)
+        }
+
+        onShowToast(`YOLO Vision complete: ${data.detectionsCount} object(s) detected in ${data.inferenceTimeMs}ms.`)
+        setIsAnalyzing(false)
+        return
+      } catch (err) {
+        console.warn('[SITEGUARD] Backend YOLO inference error:', err)
+        // If Gemini is not configured, report error; otherwise proceed to Gemini fallback
+        if (!isLiveConfigured) {
+          setAnalysisError(`Local Computer Vision Error: ${err.message}`)
+          setIsAnalyzing(false)
+          onShowToast('Local computer vision analysis failed.')
+          return
+        }
+      }
+    }
+
+    // Option 2: Live Vision AI execution via Google Gemini Multimodal
+    if (isLiveConfigured && selectedImageFile) {
+      try {
+        const reader = new FileReader()
+        const base64Promise = new Promise((resolve, reject) => {
+          reader.onload = () => {
+            const result = reader.result
+            const base64Clean = result.split(',')[1]
+            resolve(base64Clean)
+          }
+          reader.onerror = reject
+          reader.readAsDataURL(selectedImageFile)
+        })
+
+        const base64Data = await base64Promise
+        const mimeType = selectedImageFile.type || 'image/jpeg'
+
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey.trim()}`
+        const prompt = `You are SITEGUARD AI, a construction safety computer vision analyzer. Inspect this image for OSHA 1926 hazards (PPE violations, falls from heights, scaffolding/ladders, excavations/trenches, equipment proximity, material storage).
+Respond strictly with valid JSON without markdown fences matching:
+{
+  "summary": "1 sentence inspection finding",
+  "hazards": [
+    {
+      "id": "AI-H1",
+      "name": "Hazard title",
+      "category": "Fall risk" | "PPE violation" | "Scaffolding hazard" | "Excavation hazard" | "Equipment hazard" | "Other",
+      "severity": "Critical" | "High" | "Medium" | "Low",
+      "numericSeverity": 1 to 5,
+      "numericLikelihood": 1 to 5,
+      "location": "Visual area in image",
+      "confidence": 0.85 to 0.99,
+      "explanation": "Why this is dangerous under OSHA",
+      "recommendation": "Corrective action"
+    }
+  ]
+}`
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  {
+                    inline_data: {
+                      mime_type: mimeType,
+                      data: base64Data
+                    }
+                  }
+                ]
+              }
+            ],
+            generationConfig: {
+              response_mime_type: 'application/json',
+              temperature: 0.1
+            }
+          })
+        })
+
+        if (!response.ok) {
+          const errText = await response.text()
+          let parsedMsg = `Vision API call failed (HTTP ${response.status})`
+          try {
+            const jsonErr = JSON.parse(errText)
+            if (jsonErr.error && jsonErr.error.message) {
+              parsedMsg = jsonErr.error.message
+            }
+          } catch {
+            // Non-JSON response text fallback
+          }
+          throw new Error(parsedMsg)
+        }
+
+        const data = await response.json()
+        const rawContent = data?.candidates?.[0]?.content?.parts?.[0]?.text
+        if (!rawContent) throw new Error('No detection content returned from Gemini model.')
+
+        const parsed = JSON.parse(rawContent.replace(/```json|```/g, '').trim())
+        const hazardsList = Array.isArray(parsed.hazards) ? parsed.hazards : []
+        const { score, category, badgeClass } = computePhotoRiskScore(hazardsList)
+
+        setAnalysisResults({
+          mode: 'live',
+          provider: 'Google Gemini 1.5 Flash (Multimodal)',
+          summary: parsed.summary || 'Vision AI image scan complete.',
+          hazards: hazardsList,
+          score,
+          category,
+          badgeClass,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        })
+        onShowToast(`Vision AI Analysis complete: ${hazardsList.length} potential hazard(s) flagged.`)
+      } catch (err) {
+        console.error('Vision API error:', err)
+        setAnalysisError(`Vision AI Error: ${err.message}. You can switch to Demonstration Mode or verify your API key.`)
+        onShowToast('Vision AI analysis encountered an error.')
+      } finally {
+        setIsAnalyzing(false)
+      }
+      return
+    }
+
+    // Option 3: Transparent Demonstration Evaluation Mode
+    // (Used when user runs presets or uploads a photo without a configured model/key)
+    setTimeout(() => {
+      // Find matching preset or formulate realistic demonstration assessment
+      const matchedPreset = SAMPLE_PRESETS.find(p => p.filename === imageMeta?.name)
+      const hazardsList = matchedPreset ? matchedPreset.hazards : [
+        {
+          id: `DEMO-${Date.now()}-1`,
+          name: 'Unprotected Floor Edge / Perimeter Opening',
+          category: 'Fall risk',
+          severity: 'Critical',
+          numericSeverity: 5,
+          numericLikelihood: 4,
+          location: 'Elevated slab edge (Upper visual zone)',
+          confidence: null,
+          explanation: 'Demonstration pattern detection: Elevated edge lacks standard OSHA 1926.501 guardrails or warning line perimeter.',
+          recommendation: 'Erect standard toprails, midrails and toeboards prior to personnel staging.'
+        },
+        {
+          id: `DEMO-${Date.now()}-2`,
+          name: 'Missing High-Visibility Protective Vest',
+          category: 'PPE violation',
+          severity: 'Medium',
+          numericSeverity: 3,
+          numericLikelihood: 3,
+          location: 'Foreground traffic / staging pathway',
+          confidence: null,
+          explanation: 'Demonstration pattern detection: Personnel observed without ANSI Class 2 retroreflective vest in shared equipment corridor.',
+          recommendation: 'Issue compliant safety apparel at gate checkpoint.'
+        }
+      ]
+
+      const { score, category, badgeClass } = computePhotoRiskScore(hazardsList)
+
+      setAnalysisResults({
+        mode: 'demo',
+        provider: 'Demonstration Evaluation Model (Synthetic Baseline)',
+        summary: hazardsList.length > 0
+          ? `Synthetic scenario scan evaluated ${hazardsList.length} hazard vectors.`
+          : 'Synthetic scenario scan verified all safety indicators within nominal limits.',
+        hazards: hazardsList,
+        score,
+        category,
+        badgeClass,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      })
+      setIsAnalyzing(false)
+      onShowToast('[DEMO MODE] Photo analyzed with synthetic demonstration rules.')
+    }, 1100)
+  }
+
+  // Register detected hazard into persistent system state
+  const handleRegisterDetectedHazard = (hazard) => {
+    const newId = `HAZ-${Math.floor(2000 + Math.random() * 8000)}`
+
+    const newHazardEntry = {
+      id: newId,
+      site: site,
+      hazard: hazard.name,
+      category: hazard.category || 'Other',
+      description: `${hazard.explanation} (Observed Location: ${hazard.location || 'Visual field'}). Detected via Photo Risk Analyzer (${isLiveConfigured ? 'Gemini 1.5 Flash' : 'Demonstration Mode'}).`,
+      severity: hazard.severity,
+      priority: hazard.severity,
+      numericSeverity: hazard.numericSeverity || (hazard.severity === 'Critical' ? 5 : hazard.severity === 'High' ? 4 : hazard.severity === 'Medium' ? 3 : 2),
+      numericLikelihood: hazard.numericLikelihood || (hazard.severity === 'Critical' ? 5 : hazard.severity === 'High' ? 4 : hazard.severity === 'Medium' ? 3 : 2),
+      riskScore: calculateRiskScore(
+        hazard.numericSeverity || (hazard.severity === 'Critical' ? 5 : hazard.severity === 'High' ? 4 : 3),
+        hazard.numericLikelihood || (hazard.severity === 'Critical' ? 5 : hazard.severity === 'High' ? 4 : 3)
+      ),
+      categoryRecommendation: hazard.recommendation || getCategoryRecommendation(hazard.category || hazard.name),
+      priorityGuidance: getPriorityGuidance(hazard.severity),
+      status: 'Open',
+      reportedBy: `Photo Risk Analyzer (${isLiveConfigured ? 'Vision AI' : 'Demo Inspection'})`,
+      timestamp: 'Just now'
+    }
+
+    onRegisterHazard(newHazardEntry)
+    setRegisteredIds(prev => new Set([...prev, hazard.id]))
+    onShowToast(`[HAZARD REGISTERED] ${hazard.name} added to site registry & alert triage.`)
+  }
+
+  const handleRegisterAll = () => {
+    if (!analysisResults || !analysisResults.hazards) return
+    analysisResults.hazards.forEach(h => {
+      if (!registeredIds.has(h.id)) {
+        handleRegisterDetectedHazard(h)
+      }
+    })
+  }
+
+  const handleSaveApiKey = () => {
+    const trimmed = keyInput.trim()
+    if (trimmed) {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('siteguard_gemini_api_key', trimmed)
+      }
+      setApiKey(trimmed)
+      onShowToast('Gemini Vision API Key saved to browser local session.')
+    }
+    setShowKeyModal(false)
+    setKeyInput('')
+  }
+
+  const handleClearApiKey = () => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem('siteguard_gemini_api_key')
+    }
+    setApiKey('')
+    setShowKeyModal(false)
+    setKeyInput('')
+    onShowToast('Gemini API key removed. Reverting to demonstration evaluation mode.')
+  }
+
+  return (
+    <div className="view-module-container animate-entrance">
+      {/* Hero Strip */}
+      <div className="view-hero-panel">
+        <div>
+          <div className="view-hero-title">Construction Photo Risk Analyzer</div>
+          <div className="view-hero-desc">
+            Computer vision incident detection scanning jobsite imagery for OSHA 1926 infractions, missing PPE, leading edge fall vectors, and shoring risks.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="view-hero-btn"
+            style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--border-medium)', color: '#ffffff' }}
+            onClick={() => onNavigate('Dashboard')}
+          >
+            &larr; Return to Dashboard
+          </button>
+          <button
+            type="button"
+            className="view-hero-btn"
+            onClick={() => {
+              setKeyInput(apiKey)
+              setShowKeyModal(true)
+            }}
+          >
+            {isLiveConfigured ? '⚙ Manage Vision API Key' : '🔑 Configure Vision AI Key'}
+          </button>
+        </div>
+      </div>
+
+      {/* Provider Status & Transparency Strip */}
+      <div className="analyzer-config-banner">
+        <div className="analyzer-config-left">
+          <span className={`analyzer-mode-indicator ${apiStatus === 'connected' ? 'live' : isLiveConfigured ? 'live' : 'demo'}`}>
+            <span className="badge-dot" style={{ background: apiStatus === 'connected' || isLiveConfigured ? 'var(--color-low)' : 'var(--color-medium)' }} />
+            {apiStatus === 'connected'
+              ? 'YOLOv8 COMPUTER VISION ACTIVE (Local Backend)'
+              : isLiveConfigured
+              ? 'LIVE VISION AI CONFIGURED (Gemini 1.5 Flash)'
+              : 'DEMONSTRATION EVALUATION MODE'}
+          </span>
+          <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+            {apiStatus === 'connected'
+              ? `Real local YOLOv8 inference active (${visionStatus?.model || 'YOLOv8n COCO-80'}). Directly detects objects and draws verification bounding boxes on uploaded image pixels.`
+              : isLiveConfigured
+              ? 'Real-time cloud multimodal image analysis active. Image bytes transmitted directly over secure HTTPS to Gemini API.'
+              : 'No external API key or local YOLO pipeline detected. Uploads and sample scenarios execute against documented deterministic demonstration rules.'}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="table-action-cyber-btn"
+          onClick={() => {
+            setKeyInput(apiKey)
+            setShowKeyModal(true)
+          }}
+        >
+          {isLiveConfigured ? 'Gemini Key (Configured)' : 'Cloud AI Options +'}
+        </button>
+      </div>
+
+      {/* Upload Stage / Preview Grid */}
+      <div className="command-grid-2col" style={{ alignItems: 'start' }}>
+        {/* Left Column: Image Ingestion & Dropzone */}
+        <div className="cyber-panel">
+          <div className="panel-header-row">
+            <div className="panel-title-group">
+              <div className="panel-icon-badge">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                  <circle cx="12" cy="13" r="4" />
+                </svg>
+              </div>
+              <span className="panel-heading">Jobsite Photo Intake</span>
+            </div>
+            {previewUrl && (
+              <button
+                type="button"
+                className="table-action-cyber-btn"
+                onClick={handleRemoveImage}
+                title="Remove current image"
+              >
+                Clear Photo &times;
+              </button>
+            )}
+          </div>
+
+          {/* Construction Site Scope Selector for this Photo */}
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+              TARGET CONSTRUCTION SITE:
+            </label>
+            <select
+              className="site-selector-dropdown"
+              style={{ width: '100%', height: '38px', padding: '0 12px' }}
+              value={site}
+              onChange={(e) => setSite(e.target.value)}
+            >
+              {allSites.map(s => (
+                <option key={s.id} value={s.name}>{s.name} ({s.zone})</option>
+              ))}
+            </select>
+          </div>
+
+          {/* File Input (Hidden) */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+            accept="image/jpeg,image/png,image/webp,image/jpg"
+            onChange={handleFileInputChange}
+          />
+
+          {!previewUrl ? (
+            /* Dropzone Empty State */
+            <div
+              className={`analyzer-dropzone ${dragActive ? 'drag-active' : ''}`}
+              onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              <div className="dropzone-inner">
+                <div className="dropzone-icon-ring">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                    <circle cx="8.5" cy="8.5" r="1.5" />
+                    <polyline points="21 15 16 10 5 21" />
+                  </svg>
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 600, color: '#ffffff' }}>
+                  Click to Browse or Drag Construction Photo Here
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  Supports high-resolution JPG, JPEG, PNG, or WEBP (Max 10 MB)
+                </div>
+                <div className="analyzer-meta-pills" style={{ justifyContent: 'center' }}>
+                  <span className="analyzer-meta-chip">OSHA 1926 PPE</span>
+                  <span className="analyzer-meta-chip">Leading Edges</span>
+                  <span className="analyzer-meta-chip">Trench Shoring</span>
+                  <span className="analyzer-meta-chip">Crane Rigging</span>
+                </div>
+              </div>
+
+              {/* Sample Presets for Quick Testing */}
+              <div className="analyzer-sample-strip" onClick={(e) => e.stopPropagation()}>
+                <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', textAlign: 'left' }}>
+                  OR LOAD PRE-PACKAGED SAFETY SCENARIO:
+                </span>
+                <div className="sample-pills-row">
+                  {SAMPLE_PRESETS.map((scenario) => (
+                    <button
+                      key={scenario.id}
+                      type="button"
+                      className="sample-scenario-btn"
+                      onClick={() => handleSelectPreset(scenario)}
+                    >
+                      {scenario.title.split(' - ')[1] || scenario.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Active Photo Preview Card */
+            <div>
+              <div className="analyzer-img-frame">
+                <img
+                  src={showAnnotated && annotatedUrl ? annotatedUrl : previewUrl}
+                  alt="Jobsite preview for safety inspection"
+                  className="analyzer-preview-img"
+                />
+                {isAnalyzing && <div className="analyzer-scan-line" />}
+              </div>
+
+              {annotatedUrl && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--cyan-primary)', fontFamily: 'var(--font-mono)' }}>
+                    {showAnnotated ? '● Bounding Box Overlay Active' : '○ Original Uploaded Photo'}
+                  </span>
+                  <button
+                    type="button"
+                    className="table-action-cyber-btn"
+                    onClick={() => setShowAnnotated(!showAnnotated)}
+                    style={{ fontSize: '11px', padding: '3px 8px' }}
+                  >
+                    {showAnnotated ? 'View Original Photo' : 'View Annotated Boxes'}
+                  </button>
+                </div>
+              )}
+
+              <div className="analyzer-meta-pills">
+                <span className="analyzer-meta-chip">FILE: {imageMeta?.name || 'capture.jpg'}</span>
+                <span className="analyzer-meta-chip">SIZE: {imageMeta?.sizeFormatted || '1.8 MB'}</span>
+                <span className="analyzer-meta-chip">FORMAT: {imageMeta?.type?.toUpperCase() || 'IMAGE'}</span>
+                <span className="analyzer-meta-chip" style={{ color: 'var(--cyan-primary)' }}>SITE: {site}</span>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ marginTop: '16px', display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  className="view-hero-btn"
+                  style={{ flex: 1, justifyContent: 'center' }}
+                  onClick={handleAnalyzePhoto}
+                  disabled={isAnalyzing}
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <span className="sweep-spinner" />
+                      Running Real Computer Vision Inference...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
+                      </svg>
+                      {selectedImageFile && apiStatus === 'connected'
+                        ? 'Analyze with YOLOv8 Computer Vision'
+                        : isLiveConfigured
+                        ? 'Analyze with Gemini Vision AI'
+                        : 'Analyze Photo (Demo Mode)'}
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="table-action-cyber-btn"
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  disabled={isAnalyzing}
+                >
+                  Replace
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Validation or API Error Banner */}
+          {analysisError && (
+            <div style={{ marginTop: '16px', padding: '12px 14px', background: 'rgba(255, 51, 102, 0.1)', border: '1px solid var(--color-critical)', borderRadius: '8px', color: '#ff8099', fontSize: '12px' }}>
+              ⚠️ {analysisError}
+            </div>
+          )}
+
+          {/* Mandatory Professional Notice */}
+          <div className="analyzer-disclaimer-strip" style={{ marginTop: '16px' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-high)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>
+              <strong>Professional Safety Notice:</strong> This prototype analyzer is an automated decision-support heuristic. It does NOT replace an official physical site inspection by an authorized OSHA Competent Person.
+            </span>
+          </div>
+        </div>
+
+        {/* Right Column: Analysis Results & Detected Hazards */}
+        <div className="cyber-panel">
+          <div className="panel-header-row">
+            <div className="panel-title-group">
+              <div className="panel-icon-badge">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="16" y1="13" x2="8" y2="13" />
+                  <line x1="16" y1="17" x2="8" y2="17" />
+                </svg>
+              </div>
+              <span className="panel-heading">Inspection Findings &amp; Risk Metrics</span>
+            </div>
+            {analysisResults && (
+              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)' }}>
+                {analysisResults.timestamp}
+              </span>
+            )}
+          </div>
+
+          {!analysisResults ? (
+            /* Empty Prompt */
+            <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-dim)' }}>
+              <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto' }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </div>
+              <div style={{ fontSize: '14px', fontWeight: 600, color: '#ffffff', marginBottom: '4px' }}>
+                Awaiting Photo Analysis
+              </div>
+              <div style={{ fontSize: '12px', maxWidth: '340px', margin: '0 auto', lineHeight: 1.5 }}>
+                Upload a construction photograph or select a sample scenario on the left, then trigger analysis to view identified hazards, severity tiers, and corrective actions.
+              </div>
+            </div>
+          ) : (
+            /* Populated Results View */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* Overall Score Card */}
+              <div className="view-stats-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
+                <div className="view-stat-card">
+                  <span className="view-stat-label">Preliminary Risk Score</span>
+                  <span className="view-stat-value" style={{ color: analysisResults.score >= 75 ? 'var(--color-critical)' : analysisResults.score >= 50 ? 'var(--color-high)' : analysisResults.score >= 25 ? 'var(--color-medium)' : 'var(--color-low)' }}>
+                    {analysisResults.score} <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>/ 100</span>
+                  </span>
+                  <span className="view-stat-sub">Weighted Hazard Index</span>
+                </div>
+
+                <div className="view-stat-card">
+                  <span className="view-stat-label">Overall Severity Tier</span>
+                  <span className="view-stat-value">
+                    <span className={`cyber-badge ${analysisResults.badgeClass}`}>
+                      <span className="badge-dot" />
+                      {analysisResults.category.toUpperCase()}
+                    </span>
+                  </span>
+                  <span className="view-stat-sub">OSHA Escalation Class</span>
+                </div>
+
+                <div className="view-stat-card">
+                  <span className="view-stat-label">Suspected Hazards</span>
+                  <span className="view-stat-value" style={{ color: analysisResults.hazards.length > 0 ? 'var(--cyan-primary)' : 'var(--color-low)' }}>
+                    {analysisResults.hazards.length} FLAGGED
+                  </span>
+                  <span className="view-stat-sub">{analysisResults.hazards.filter(h => h.severity === 'Critical').length} Critical</span>
+                </div>
+
+                <div className="view-stat-card">
+                  <span className="view-stat-label">Detection Engine</span>
+                  <span className="view-stat-value" style={{ fontSize: '13px', color: analysisResults.mode === 'yolo' || analysisResults.mode === 'live' ? 'var(--color-low)' : 'var(--color-medium)' }}>
+                    {analysisResults.mode === 'yolo' ? 'YOLOv8 (LOCAL)' : analysisResults.mode === 'live' ? 'GEMINI 1.5' : 'DEMO MODE'}
+                  </span>
+                  <span className="view-stat-sub">
+                    {analysisResults.mode === 'yolo' ? `${analysisResults.inferenceTimeMs || 45}ms Inference` : analysisResults.mode === 'live' ? 'Cloud Multimodal AI' : 'Synthetic Baseline'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Scoring Formula Disclosure */}
+              <div className="analyzer-score-breakdown">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 600, color: '#ffffff' }}>Scoring Methodology &amp; Weighting Formula:</span>
+                  <button
+                    type="button"
+                    style={{ fontSize: '11px', color: 'var(--cyan-primary)', cursor: 'pointer' }}
+                    onClick={() => setShowScoringDetails(!showScoringDetails)}
+                  >
+                    {showScoringDetails ? '▲ Hide Details' : '▼ View Breakdown'}
+                  </button>
+                </div>
+                {showScoringDetails && (
+                  <div style={{ marginTop: '8px', lineHeight: 1.5, borderTop: '1px solid var(--border-subtle)', paddingTop: '6px' }}>
+                    Calculated as: <code>Risk Score = min(100, &sum; Severity Weights)</code> where:
+                    <br />&bull; <strong>Critical Hazard:</strong> 40 pts &nbsp;&bull; <strong>High:</strong> 25 pts &nbsp;&bull; <strong>Medium:</strong> 12 pts &nbsp;&bull; <strong>Low:</strong> 5 pts.
+                    <br />Tiers: <strong>75–100:</strong> Critical Risk | <strong>50–74:</strong> High Risk | <strong>25–49:</strong> Medium Risk | <strong>0–24:</strong> Low/Nominal.
+                  </div>
+                )}
+              </div>
+
+              {/* Overview Summary */}
+              {analysisResults.summary && (
+                <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.5, background: 'rgba(255, 255, 255, 0.02)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
+                  <strong style={{ color: '#ffffff' }}>
+                    {analysisResults.mode === 'yolo' ? 'YOLO Inference Summary:' : 'AI Summary:'}
+                  </strong>{' '}
+                  {analysisResults.summary}
+                </div>
+              )}
+
+              {/* Model Scope & Transparency Disclaimer */}
+              {analysisResults.modelDisclaimer && (
+                <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.4, background: 'rgba(56, 189, 248, 0.04)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(56, 189, 248, 0.15)' }}>
+                  ℹ️ <strong>Model Scope:</strong> {analysisResults.modelDisclaimer}
+                </div>
+              )}
+
+              {/* Detected Hazards List */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', letterSpacing: '0.5px' }}>
+                    DETECTED HAZARD VECTORS ({analysisResults.hazards.length}):
+                  </span>
+                  {analysisResults.hazards.length > 1 && (
+                    <button
+                      type="button"
+                      className="table-action-cyber-btn"
+                      onClick={handleRegisterAll}
+                    >
+                      Register All to Registry &rarr;
+                    </button>
+                  )}
+                </div>
+
+                {analysisResults.hazards.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '24px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid var(--color-low)', borderRadius: '8px', color: '#6ee7b7', fontSize: '12.5px' }}>
+                    ✓ <strong>No Visible Safety Infractions Flagged:</strong> The scanned scene exhibits compliant PPE, anchored scaffolding edges, and clear transit zones matching OSHA 1926 standards.
+                  </div>
+                ) : (
+                  analysisResults.hazards.map((hazard) => {
+                    const isRegistered = registeredIds.has(hazard.id)
+                    const sevClass = (hazard.severity || 'medium').toLowerCase()
+                    return (
+                      <div key={hazard.id} className={`detected-hazard-card ${sevClass}`}>
+                        <div className="detected-hazard-header">
+                          <div>
+                            <div className="detected-hazard-title">
+                              {hazard.name}
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '3px' }}>
+                              <span className="detected-hazard-loc">
+                                📍 {hazard.location || 'Visual field'}
+                              </span>
+                              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>&bull; Category: {hazard.category || 'General'}</span>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <span className={`cyber-badge ${sevClass}`}>
+                              {hazard.severity}
+                            </span>
+                            {hazard.confidence !== null && hazard.confidence !== undefined ? (
+                              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--cyan-primary)' }}>
+                                {(hazard.confidence * 100).toFixed(0)}% Conf
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-dim)' }}>
+                                N/A (Demo Mode)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="detected-hazard-body">
+                          {hazard.explanation}
+                        </div>
+
+                        {hazard.recommendation && (
+                          <div className="detected-hazard-rec">
+                            <strong style={{ color: 'var(--cyan-primary)' }}>Recommended Corrective Action:</strong> {hazard.recommendation}
+                          </div>
+                        )}
+
+                        <div className="detected-hazard-actions">
+                          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                            Site: <strong>{site}</strong>
+                          </span>
+                          <button
+                            type="button"
+                            className="table-action-cyber-btn"
+                            disabled={isRegistered}
+                            onClick={() => handleRegisterDetectedHazard(hazard)}
+                            style={{
+                              background: isRegistered ? 'rgba(16, 185, 129, 0.15)' : undefined,
+                              borderColor: isRegistered ? 'var(--color-low)' : undefined,
+                              color: isRegistered ? 'var(--color-low)' : undefined
+                            }}
+                          >
+                            {isRegistered ? '✓ Registered in Hazard Registry' : '+ Register as Verified Hazard'}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              {/* Bottom Quick Navigation Links */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', paddingTop: '14px', marginTop: '6px' }}>
+                <button
+                  type="button"
+                  className="table-action-cyber-btn"
+                  onClick={handleRemoveImage}
+                >
+                  &larr; Analyze Another Photo
+                </button>
+                <button
+                  type="button"
+                  className="view-hero-btn"
+                  style={{ padding: '8px 14px' }}
+                  onClick={() => onNavigate('Dashboard')}
+                >
+                  View Active Dashboard Hazards Table &rarr;
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Gemini API Key Configuration Modal */}
+      {showKeyModal && (
+        <div className="kpi-modal-overlay" onClick={() => setShowKeyModal(false)} role="dialog" aria-modal="true">
+          <div className="kpi-modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '520px' }}>
+            <div className="kpi-modal-header">
+              <div className="kpi-modal-title-row">
+                <div className="kpi-modal-title">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-primary)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  Configure Google Gemini Vision API Key
+                </div>
+                <div className="kpi-modal-sub">
+                  Enables real-time multimodal construction hazard detection using Gemini 1.5 Flash
+                </div>
+              </div>
+              <button type="button" className="kpi-modal-close-btn" onClick={() => setShowKeyModal(false)} aria-label="Close dialog">&times;</button>
+            </div>
+
+            <div className="kpi-modal-body">
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Enter your Google Gemini API key to enable live computer vision analysis. Keys are stored only in your local browser storage and are never committed to Git or transmitted to any third-party server besides Google's official Gemini endpoint.
+              </p>
+
+              <div style={{ marginTop: '8px' }}>
+                <label style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--cyan-bright)', display: 'block', marginBottom: '6px' }}>
+                  GEMINI API KEY:
+                </label>
+                <input
+                  type="password"
+                  className="cyber-search-box"
+                  style={{ width: '100%', height: '40px', padding: '0 12px', fontSize: '13px' }}
+                  placeholder="AIzaSy..."
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                />
+              </div>
+
+              <div style={{ background: 'rgba(56, 189, 248, 0.05)', border: '1px solid rgba(56, 189, 248, 0.2)', padding: '10px 12px', borderRadius: '6px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                Tip: You can also specify <code>VITE_GEMINI_API_KEY=your_key</code> in <code>frontend/.env</code> to configure it automatically without manual entry.
+              </div>
+            </div>
+
+            <div className="kpi-modal-footer">
+              {apiKey && (
+                <button
+                  type="button"
+                  className="kpi-modal-btn secondary"
+                  style={{ color: 'var(--color-critical)' }}
+                  onClick={handleClearApiKey}
+                >
+                  Clear Key
+                </button>
+              )}
+              <button
+                type="button"
+                className="kpi-modal-btn secondary"
+                onClick={() => setShowKeyModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="kpi-modal-btn primary"
+                onClick={handleSaveApiKey}
+              >
+                Save &amp; Activate Live AI
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
 // Sub-View: 4. Safety Monitoring Dedicated View
 // ============================================================================
 function SafetyMonitoringView({ selectedSite, onShowToast }) {
@@ -2977,13 +4641,70 @@ function ComplianceView({ selectedSite, onShowToast }) {
 // ============================================================================
 // Sub-View: 5. Insurance Risk Dedicated View
 // ============================================================================
-function InsuranceRiskView({ selectedSite, onShowToast }) {
+function InsuranceRiskView({ selectedSite, hazards = [], alerts = [], onShowToast }) {
   const [simulatedScore, setSimulatedScore] = useState(92)
+  const [isExporting, setIsExporting] = useState(false)
 
   // Calculations based on simulatedScore slider
   const projectedLossRatio = (24 - (simulatedScore - 70) * 0.38).toFixed(1)
   const annualSavings = Math.round(80000 + (simulatedScore - 70) * 2060)
   const riskGrade = simulatedScore >= 90 ? 'AAA' : simulatedScore >= 80 ? 'AA' : 'A'
+
+  const handleExportActuarialPdf = () => {
+    try {
+      setIsExporting(true)
+      generateActuarialInsurancePdf({
+        site: selectedSite,
+        simulatedScore,
+        projectedLossRatio,
+        annualSavings,
+        riskGrade,
+        hazards,
+        alerts
+      })
+      onShowToast(`[DOWNLOAD COMPLETE] Actuarial Dossier PDF generated for ${selectedSite}.`)
+    } catch (err) {
+      console.error('Actuarial PDF export error:', err)
+      onShowToast(`Export error: ${err.message}`)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const handleExportActuarialJson = () => {
+    try {
+      const dateStamp = getFormattedDateStamp()
+      const siteSlug = sanitizeFilenamePart(selectedSite)
+      const data = {
+        dossierMetadata: {
+          system: 'SITEGUARD AI Actuarial Underwriting System',
+          targetSite: selectedSite,
+          exportedAt: new Date().toISOString(),
+          simulatedComplianceScore: `${simulatedScore}%`,
+          underwritingGrade: riskGrade,
+          disclaimer: 'Actuarial calculations are simulated estimates for demonstration. Not an underwriting insurance contract.'
+        },
+        actuarialMetrics: {
+          projectedLossRatio: `${projectedLossRatio}%`,
+          annualPremiumCredit: annualSavings,
+          actuarialConfidence: '96.2%',
+          benchmarkComparison: '8.2% Below Industry Benchmark (20.6%)'
+        },
+        riskVectors: [
+          { name: 'Scaffolding & Fall Protection Risk', value: '8%', evaluation: 'Optimal' },
+          { name: 'Heavy Hoisting & Crane Swing Envelope', value: '18%', evaluation: 'Elevated' },
+          { name: 'Excavation Shoring & Trench Subsidence', value: '9%', evaluation: 'Optimal' },
+          { name: 'Subcontractor Certification & PPE Protocol', value: '12%', evaluation: 'Moderate' }
+        ],
+        activeSiteHazardsCount: (hazards || []).filter(h => selectedSite === 'All Sites' || h.site === selectedSite).length
+      }
+      downloadJsonFile(data, `SITEGUARD_AI_Actuarial_Metrics_${siteSlug}_${dateStamp}.json`)
+      onShowToast(`[DOWNLOAD COMPLETE] Actuarial JSON metrics exported for ${selectedSite}.`)
+    } catch (err) {
+      console.error('Actuarial JSON export error:', err)
+      onShowToast(`Export error: ${err.message}`)
+    }
+  }
 
   return (
     <div className="view-module-container animate-entrance">
@@ -2994,18 +4715,35 @@ function InsuranceRiskView({ selectedSite, onShowToast }) {
             Real-time loss ratio forecasting and premium discount qualification derived from agentic safety compliance scores at {selectedSite}.
           </div>
         </div>
-        <button
-          type="button"
-          className="view-hero-btn"
-          onClick={() => onShowToast(`Actuarial Loss Prevention Dossier exported for ${selectedSite}`)}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          Export Actuarial Dossier
-        </button>
+        <div className="view-hero-actions">
+          <button
+            type="button"
+            className="view-hero-btn"
+            onClick={handleExportActuarialPdf}
+            disabled={isExporting}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            {isExporting ? 'Generating Dossier...' : 'Export Actuarial Dossier (PDF)'}
+          </button>
+          <button
+            type="button"
+            className="view-hero-btn secondary"
+            onClick={handleExportActuarialJson}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+              <polyline points="10 9 9 9 8 9" />
+            </svg>
+            Export JSON Data
+          </button>
+        </div>
       </div>
 
       {/* Actuarial Metric Cards */}
@@ -3163,51 +4901,15 @@ function InsuranceRiskView({ selectedSite, onShowToast }) {
 // ============================================================================
 // Sub-View: 6. Reports Dedicated View
 // ============================================================================
-function ReportsView({ selectedSite, onShowToast }) {
+function ReportsView({ reports, onAddReport, selectedSite, hazards = [], alerts = [], settings = {}, onShowToast }) {
   const [reportFilter, setReportFilter] = useState('All')
   const [isGenerating, setIsGenerating] = useState(false)
-  const [reports, setReports] = useState([
-    {
-      id: 'rep-1',
-      title: 'Weekly Autonomous Risk Dossier - Week 42',
-      category: 'Weekly Brief',
-      date: 'Oct 14, 2026',
-      size: '2.4 MB PDF',
-      author: 'Sentinel Agent v2.4',
-      status: 'Ready'
-    },
-    {
-      id: 'rep-2',
-      title: 'Crane Wind Load & Structural Stress Analysis',
-      category: 'Structural Audit',
-      date: 'Oct 12, 2026',
-      size: '1.8 MB PDF',
-      author: 'Structural Sentinel Agent',
-      status: 'Ready'
-    },
-    {
-      id: 'rep-3',
-      title: 'OSHA 1926 Bi-Weekly Field Compliance Audit',
-      category: 'Compliance Log',
-      date: 'Oct 10, 2026',
-      size: '3.1 MB PDF',
-      author: 'Compliance Auditor AI',
-      status: 'Ready'
-    },
-    {
-      id: 'rep-4',
-      title: 'Subcontractor Geofence Infraction Investigation',
-      category: 'Incident Investigation',
-      date: 'Oct 08, 2026',
-      size: '1.2 MB PDF',
-      author: 'Vision AI Inspector',
-      status: 'Ready'
-    }
-  ])
+  const [isExportingPdf, setIsExportingPdf] = useState(false)
+  const currentReports = reports || INITIAL_REPORTS
 
   const filteredReports = reportFilter === 'All'
-    ? reports
-    : reports.filter(r => r.category === reportFilter)
+    ? currentReports
+    : currentReports.filter(r => r.category === reportFilter)
 
   const handleGenerateReport = () => {
     setIsGenerating(true)
@@ -3221,10 +4923,60 @@ function ReportsView({ selectedSite, onShowToast }) {
         author: 'Sentinel Deliberation Engine',
         status: 'Ready'
       }
-      setReports(prev => [newRep, ...prev])
+      if (onAddReport) {
+        onAddReport(newRep)
+      }
       setIsGenerating(false)
       onShowToast(`Generated new risk dossier for ${selectedSite}`)
     }, 700)
+  }
+
+  // Real file download handlers
+  const handleDownloadReportPdf = (rep) => {
+    try {
+      setIsExportingPdf(true)
+      generateExecutiveReportPdf({
+        reportItem: rep,
+        site: selectedSite,
+        hazards,
+        alerts
+      })
+      onShowToast(`[DOWNLOAD COMPLETE] Official PDF report generated for ${selectedSite}.`)
+    } catch (err) {
+      console.error('PDF export error:', err)
+      onShowToast(`Failed to generate PDF report: ${err.message}`)
+    } finally {
+      setIsExportingPdf(false)
+    }
+  }
+
+  const handleDownloadReportJson = (rep) => {
+    try {
+      exportProjectRiskJson({
+        site: selectedSite,
+        hazards,
+        alerts,
+        reports: rep ? [rep] : currentReports,
+        settings
+      })
+      onShowToast(`[DOWNLOAD COMPLETE] Project risk telemetry JSON exported for ${selectedSite}.`)
+    } catch (err) {
+      console.error('JSON export error:', err)
+      onShowToast(`Failed to export JSON report: ${err.message}`)
+    }
+  }
+
+  const handleDownloadHazardsCsv = () => {
+    try {
+      exportHazardsCsv({
+        site: selectedSite,
+        hazards
+      })
+      onShowToast(`[DOWNLOAD COMPLETE] Site hazards CSV exported for ${selectedSite}.`)
+    } catch (err) {
+      console.error('CSV export error:', err)
+      onShowToast(`Failed to export CSV: ${err.message}`)
+    }
   }
 
   return (
@@ -3233,21 +4985,63 @@ function ReportsView({ selectedSite, onShowToast }) {
         <div>
           <div className="view-hero-title">Executive AI Risk Reports &amp; Dossiers</div>
           <div className="view-hero-desc">
-            Automated PDF briefings compiled by the SiteGuard AI deliberation engine for {selectedSite}.
+            Automated PDF briefings, CSV logs, and JSON telemetry compiled by the SiteGuard AI deliberation engine for {selectedSite}.
           </div>
         </div>
-        <button
-          type="button"
-          className="view-hero-btn"
-          onClick={handleGenerateReport}
-          disabled={isGenerating}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
-          {isGenerating ? 'Compiling Dossier...' : 'Generate On-Demand Dossier'}
-        </button>
+        <div className="view-hero-actions">
+          <button
+            type="button"
+            className="view-hero-btn"
+            onClick={handleGenerateReport}
+            disabled={isGenerating}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+            {isGenerating ? 'Compiling Dossier...' : 'Generate On-Demand Dossier'}
+          </button>
+          <button
+            type="button"
+            className="view-hero-btn secondary"
+            onClick={() => handleDownloadReportPdf(null)}
+            disabled={isExportingPdf}
+            title="Download executive safety summary PDF for selected site"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            {isExportingPdf ? 'Exporting...' : 'Download Site PDF'}
+          </button>
+          <button
+            type="button"
+            className="view-hero-btn secondary"
+            onClick={handleDownloadHazardsCsv}
+            title="Export CSV spreadsheet of active hazards"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="12" y1="18" x2="12" y2="12" />
+              <line x1="9" y1="15" x2="15" y2="15" />
+            </svg>
+            Export Hazards CSV
+          </button>
+          <button
+            type="button"
+            className="view-hero-btn secondary"
+            onClick={() => handleDownloadReportJson(null)}
+            title="Export complete telemetry payload as JSON"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="16 18 22 12 16 6" />
+              <polyline points="8 6 2 12 8 18" />
+            </svg>
+            Export Risk JSON
+          </button>
+        </div>
       </div>
 
       {/* Reports Metrics */}
@@ -3269,7 +5063,7 @@ function ReportsView({ selectedSite, onShowToast }) {
         </div>
         <div className="view-stat-card">
           <span className="view-stat-label">Export Archival Formats</span>
-          <span className="view-stat-value">PDF // JSON</span>
+          <span className="view-stat-value">PDF // CSV // JSON</span>
           <span className="view-stat-sub">Encrypted Actuarial Telemetry</span>
         </div>
       </div>
@@ -3289,7 +5083,7 @@ function ReportsView({ selectedSite, onShowToast }) {
           ))}
         </div>
         <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-          SIMULATED PDF EXPORT SYSTEM
+          REAL-TIME COMPLIANCE EXPORT ENGINE (PDF // CSV // JSON)
         </span>
       </div>
 
@@ -3303,7 +5097,7 @@ function ReportsView({ selectedSite, onShowToast }) {
               <th>Compiled By</th>
               <th>Generated Date</th>
               <th>File Size</th>
-              <th>Download</th>
+              <th>Download File</th>
             </tr>
           </thead>
           <tbody>
@@ -3321,13 +5115,25 @@ function ReportsView({ selectedSite, onShowToast }) {
                 <td style={{ color: 'var(--text-dim)', fontSize: '12px' }}>{rep.date}</td>
                 <td style={{ color: 'var(--cyan-primary)', fontWeight: 600, fontSize: '12px' }}>{rep.size}</td>
                 <td>
-                  <button
-                    type="button"
-                    className="table-action-cyber-btn"
-                    onClick={() => onShowToast(`Simulated download initiated: ${rep.title}.pdf`)}
-                  >
-                    Download PDF &darr;
-                  </button>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="table-action-cyber-btn"
+                      onClick={() => handleDownloadReportPdf(rep)}
+                      title={`Download official PDF: ${rep.title}`}
+                    >
+                      PDF &darr;
+                    </button>
+                    <button
+                      type="button"
+                      className="table-action-cyber-btn"
+                      style={{ borderColor: 'var(--border-subtle)', background: 'transparent' }}
+                      onClick={() => handleDownloadReportJson(rep)}
+                      title={`Download JSON telemetry: ${rep.title}`}
+                    >
+                      JSON &darr;
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -3498,19 +5304,21 @@ function AlertsCenterView({ alerts, onDismissAlert, onAcknowledgeAlert, onClearA
 // ============================================================================
 // Sub-View: 8. Settings Dedicated View
 // ============================================================================
-function SettingsView({ onShowToast, onResetDemoData }) {
-  const [reasoningFreq, setReasoningFreq] = useState(15)
-  const [consensusThreshold, setConsensusThreshold] = useState(85)
-  const [deepReasoning, setDeepReasoning] = useState(true)
-  const [windThreshold, setWindThreshold] = useState(40)
-  const [driftThreshold, setDriftThreshold] = useState(0.04)
-  const [smsDispatch, setSmsDispatch] = useState(true)
-  const [sirenSimulation, setSirenSimulation] = useState(false)
-  const [dailyDigest, setDailyDigest] = useState(true)
-  const [simSpeed, setSimSpeed] = useState('1x')
+function SettingsView({ settings, onUpdateSettings, onShowToast, onResetDemoData }) {
+  const formState = settings || DEFAULT_SETTINGS
+
+  const handleChange = (key, value) => {
+    const updated = { ...formState, [key]: value }
+    if (onUpdateSettings) {
+      onUpdateSettings(updated)
+    }
+  }
 
   const handleSave = () => {
-    onShowToast('Configuration parameters synced to Sentinel edge agents (Simulated)')
+    if (onUpdateSettings) {
+      onUpdateSettings(formState)
+    }
+    onShowToast('Configuration parameters synced to Sentinel edge agents and saved locally.')
   }
 
   return (
@@ -3558,14 +5366,14 @@ function SettingsView({ onShowToast, onResetDemoData }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#ffffff', display: 'block', marginBottom: '6px' }}>
-                Deliberation Polling Frequency: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{reasoningFreq}s</span>
+                Deliberation Polling Frequency: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{formState.reasoningFreq}s</span>
               </label>
               <input
                 type="range"
                 min="1"
                 max="60"
-                value={reasoningFreq}
-                onChange={(e) => setReasoningFreq(Number(e.target.value))}
+                value={formState.reasoningFreq}
+                onChange={(e) => handleChange('reasoningFreq', Number(e.target.value))}
                 style={{ width: '100%', accentColor: 'var(--cyan-primary)' }}
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
@@ -3577,14 +5385,14 @@ function SettingsView({ onShowToast, onResetDemoData }) {
 
             <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#ffffff', display: 'block', marginBottom: '6px' }}>
-                Multi-Agent Consensus Threshold: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{consensusThreshold}%</span>
+                Multi-Agent Consensus Threshold: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{formState.consensusThreshold}%</span>
               </label>
               <input
                 type="range"
                 min="70"
                 max="99"
-                value={consensusThreshold}
-                onChange={(e) => setConsensusThreshold(Number(e.target.value))}
+                value={formState.consensusThreshold}
+                onChange={(e) => handleChange('consensusThreshold', Number(e.target.value))}
                 style={{ width: '100%', accentColor: 'var(--cyan-primary)' }}
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
@@ -3603,8 +5411,8 @@ function SettingsView({ onShowToast, onResetDemoData }) {
                 <input
                   type="checkbox"
                   className="cyber-toggle-input"
-                  checked={deepReasoning}
-                  onChange={(e) => setDeepReasoning(e.target.checked)}
+                  checked={formState.deepReasoning}
+                  onChange={(e) => handleChange('deepReasoning', e.target.checked)}
                 />
               </label>
             </div>
@@ -3627,14 +5435,14 @@ function SettingsView({ onShowToast, onResetDemoData }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#ffffff', display: 'block', marginBottom: '6px' }}>
-                Crane Wind Velocity Cutoff: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{windThreshold} km/h</span>
+                Crane Wind Velocity Cutoff: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{formState.windThreshold} km/h</span>
               </label>
               <input
                 type="range"
                 min="20"
                 max="60"
-                value={windThreshold}
-                onChange={(e) => setWindThreshold(Number(e.target.value))}
+                value={formState.windThreshold}
+                onChange={(e) => handleChange('windThreshold', Number(e.target.value))}
                 style={{ width: '100%', accentColor: 'var(--cyan-primary)' }}
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
@@ -3646,15 +5454,15 @@ function SettingsView({ onShowToast, onResetDemoData }) {
 
             <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#ffffff', display: 'block', marginBottom: '6px' }}>
-                Scaffolding Drift Tolerance: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{driftThreshold}°</span>
+                Scaffolding Drift Tolerance: <span style={{ color: 'var(--cyan-primary)', fontWeight: 700 }}>{formState.driftThreshold}°</span>
               </label>
               <input
                 type="range"
                 min="0.01"
                 max="0.10"
                 step="0.01"
-                value={driftThreshold}
-                onChange={(e) => setDriftThreshold(Number(e.target.value))}
+                value={formState.driftThreshold}
+                onChange={(e) => handleChange('driftThreshold', Number(e.target.value))}
                 style={{ width: '100%', accentColor: 'var(--cyan-primary)' }}
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
@@ -3689,8 +5497,8 @@ function SettingsView({ onShowToast, onResetDemoData }) {
               <input
                 type="checkbox"
                 className="cyber-toggle-input"
-                checked={smsDispatch}
-                onChange={(e) => setSmsDispatch(e.target.checked)}
+                checked={formState.smsDispatch}
+                onChange={(e) => handleChange('smsDispatch', e.target.checked)}
               />
             </label>
 
@@ -3703,8 +5511,8 @@ function SettingsView({ onShowToast, onResetDemoData }) {
                 <input
                   type="checkbox"
                   className="cyber-toggle-input"
-                  checked={sirenSimulation}
-                  onChange={(e) => setSirenSimulation(e.target.checked)}
+                  checked={formState.sirenSimulation}
+                  onChange={(e) => handleChange('sirenSimulation', e.target.checked)}
                 />
               </label>
             </div>
@@ -3718,8 +5526,8 @@ function SettingsView({ onShowToast, onResetDemoData }) {
                 <input
                   type="checkbox"
                   className="cyber-toggle-input"
-                  checked={dailyDigest}
-                  onChange={(e) => setDailyDigest(e.target.checked)}
+                  checked={formState.dailyDigest}
+                  onChange={(e) => handleChange('dailyDigest', e.target.checked)}
                 />
               </label>
             </div>
@@ -3751,9 +5559,9 @@ function SettingsView({ onShowToast, onResetDemoData }) {
                   <button
                     key={spd}
                     type="button"
-                    className={`cyber-pill-btn ${simSpeed === spd ? 'active' : ''}`}
+                    className={`cyber-pill-btn ${formState.simSpeed === spd ? 'active' : ''}`}
                     onClick={() => {
-                      setSimSpeed(spd)
+                      handleChange('simSpeed', spd)
                       onShowToast(`Simulation velocity set to ${spd}`)
                     }}
                   >
@@ -3833,6 +5641,14 @@ function renderCommandIcon(name) {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <line x1="12" y1="1" x2="12" y2="23" />
           <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+        </svg>
+      )
+    case 'camera':
+    case 'analyzer':
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+          <circle cx="12" cy="13" r="4" />
         </svg>
       )
     case 'reports':
