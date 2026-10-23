@@ -9,3 +9,5 @@ pytest>=8.3.0
 ultralytics>=8.3.0
 python-multipart>=0.0.18
 pillow>=10.4.0
+bcrypt
+passlib
